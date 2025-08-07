@@ -1,12 +1,12 @@
 // ==UserScript==
-// @name           B站播放器多余按钮移除
-// @namespace      http://tampermonkey.net/
-// @version        1.1
-// @description    移除B站视频页面上的指定浮窗按钮
-// @match          https://www.bilibili.com/video/*
-// @run-at         document-end
-// @grant          none
-// @license        MIT
+// @name         B站播放器多余按钮移除
+// @namespace    http://tampermonkey.net/
+// @version      1.1.1
+// @description  移除B站视频页面上的指定浮窗按钮
+// @match        https://www.bilibili.com/video/*
+// @run-at       document-end
+// @icon         https://i0.hdslb.com/bfs/static/jinkela/long/images/favicon.ico
+// @license      MIT
 // ==/UserScript==
 
 (function() {
