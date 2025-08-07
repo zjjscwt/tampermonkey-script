@@ -26,7 +26,7 @@
         .wp-playlist-tracks { display: none!important; }
         .wp-video-playlist { display: flex; flex-direction: column; padding: 0!important; border: none!important; background: none!important; }
         .entry > p { display: none; }
-        #artplayer { width: 100%; height: 600px; margin-bottom: 15px; }
+        #artplayer { width: 100%; height: 550px; margin-bottom: 15px; }
         .player-episodes { background-color: #2e2e2e; border-radius: 8px; padding: 15px; }
         .episodes-title { color: #fff; font-size: 16px; font-weight: bold; margin-bottom: 12px; border-bottom: 2px solid #3a8fb7; padding-bottom: 8px; }
         .tabs-root { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; max-height: 300px; overflow-y: auto; }
