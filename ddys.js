@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         低端影视DDYS优化
 // @namespace    https://github.com/s0urcelab/userscripts
-// @version      1.2.3
+// @version      1.3.0
 // @description  改为artplayer播放器，优化选集界面
 // @author       Ryan_CC
 // @match        https://ddys.art/*
@@ -26,7 +26,7 @@
         .wp-playlist-tracks { display: none!important; }
         .wp-video-playlist { display: flex; flex-direction: column; padding: 0!important; border: none!important; background: none!important; }
         .entry > p { display: none; }
-        #artplayer { width: 100%; height: 550px; margin-bottom: 15px; }
+        #artplayer { width: 100%; height: 500px; margin-bottom: 15px; }
         .player-episodes { background-color: #2e2e2e; border-radius: 8px; padding: 15px; }
         .episodes-title { color: #fff; font-size: 16px; font-weight: bold; margin-bottom: 12px; border-bottom: 2px solid #3a8fb7; padding-bottom: 8px; }
         .tabs-root { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; max-height: 300px; overflow-y: auto; }
@@ -85,7 +85,7 @@
             this.container.onclick = (e) => {
                 const item = e.target.closest('.tab-item')
                 if (!item) return
-
+                
                 const key = item.dataset.key
                 const episode = this.episodes.find(ep => ep.key === key)
                 this.render(key)
@@ -114,13 +114,36 @@
         // 解析视频资源
         const rawData = JSON.parse($('.wp-playlist-script').textContent)
         const episodes = rawData.tracks.map(parseResUrl)
-
+        
         // 获取存储的观看记录
         const stored = getStoredData()
         const initEpisode = stored.ep || '1'
         const initUrl = episodes.find(ep => ep.key === initEpisode)?.url || episodes[0].url
 
         console.log(`初始播放: ${initUrl}`)
+
+        // 初始化选集标签（需要在播放器之前初始化，供播放器使用）
+        const tabs = new EpisodeTabs($('.tabs-root'), episodes, (key, episode) => {
+            console.log(`切换到: 第${key}集 - ${episode.label}`)
+            player.switchUrl(episode.url)
+        })
+        tabs.render(initEpisode)
+
+        // 播放下一集函数
+        const playNextEpisode = () => {
+            const currentIndex = episodes.findIndex(ep => ep.key === tabs.selectedKey)
+            const nextIndex = currentIndex + 1
+            
+            if (nextIndex < episodes.length) {
+                const nextEpisode = episodes[nextIndex]
+                tabs.render(nextEpisode.key)
+                tabs.onSelect(nextEpisode.key, nextEpisode)
+                console.log(`自动播放下一集: 第${nextEpisode.key}集 - ${nextEpisode.label}`)
+            } else {
+                console.log('已经是最后一集了')
+                // 可以在这里添加提示或其他逻辑
+            }
+        }
 
         // 初始化播放器
         const player = new Artplayer({
@@ -142,8 +165,7 @@
                 index: 13,
                 html: '<i class="art-icon flex"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" fill="currentColor"/></svg></i>',
                 tooltip: '播放下一集',
-                click: function () {
-                },
+                click: playNextEpisode,
               },
             ],
             plugins: stored.seek ? [
@@ -153,13 +175,6 @@
                 }
             ] : []
         })
-
-        // 初始化选集标签
-        const tabs = new EpisodeTabs($('.tabs-root'), episodes, (key, episode) => {
-            console.log(`切换到: 第${key}集 - ${episode.label}`)
-            player.switchUrl(episode.url)
-        })
-        tabs.render(initEpisode)
 
         // 监听播放进度
         player.on('video:timeupdate', () => {
