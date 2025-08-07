@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         低端影视DDYS优化
 // @namespace    https://github.com/s0urcelab/userscripts
-// @version      1.3.1
+// @version      1.3.2
 // @description  改为artplayer播放器，优化选集界面
 // @author       Ryan_CC
 // @match        https://ddys.art/*
@@ -149,7 +149,6 @@
         const player = new Artplayer({
             container: '#artplayer',
             url: initUrl,
-            autoMini: true,
             pip: true,
             setting: true,
             playbackRate: true,
