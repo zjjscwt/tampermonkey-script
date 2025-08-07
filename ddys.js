@@ -132,7 +132,6 @@
             playbackRate: true,
             hotkey: true,
             fullscreen: true,
-            fullscreenWeb: true,
             miniProgressBar: true,
             autoOrientation: true,
             fastForward: true,
