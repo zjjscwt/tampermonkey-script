@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         低端影视DDYS优化
 // @namespace    https://github.com/zjjscwt/tampermonkey-script
-// @version      1.1.0
+// @version      1.2.0
 // @description  替换为artplayer播放器，增加下一集和小窗功能。自动跳转至上次观看集数及时间。优化选集界面。
 // @author       Ryan_CC
 // @match        https://ddys.art/*
@@ -12,6 +12,8 @@
 // @require      https://fastly.jsdelivr.net/npm/artplayer@5.2.5/dist/artplayer.js
 // @run-at       document-end
 // @license      MIT
+// @downloadURL https://update.greasyfork.org/scripts/544925/%E4%BD%8E%E7%AB%AF%E5%BD%B1%E8%A7%86DDYS%E4%BC%98%E5%8C%96.user.js
+// @updateURL https://update.greasyfork.org/scripts/544925/%E4%BD%8E%E7%AB%AF%E5%BD%B1%E8%A7%86DDYS%E4%BC%98%E5%8C%96.meta.js
 // ==/UserScript==
 
 (function() {
@@ -39,6 +41,9 @@
         .tab-item.playing { font-weight: bold; color: #fff; background-color: #3a8fb7; border-color: #4a9fc7; box-shadow: 0 2px 8px rgba(58, 143, 183, 0.3); }
         .tab-item:not(.playing):hover { background-color: #6a6a6a; transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2); }
         .tab-item > .indicator { display: inline-block; height: 14px; width: 14px; margin-right: 6px; vertical-align: middle; }
+        /* 新增布局修改样式 */
+        .post-box {width: 23% !important;margin-right: 1% !important;margin-bottom: 3% !important;}
+        .post-box:nth-child(4n) {margin-right: 0 !important;}
     `)
 
     // 工具函数
