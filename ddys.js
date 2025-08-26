@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         低端影视DDYS优化
 // @namespace    https://github.com/zjjscwt/tampermonkey-script
-// @version      1.2.1
+// @version      1.2.2
 // @description  替换为artplayer播放器，增加下一集和小窗功能。自动跳转至上次观看集数及时间。优化选集界面。
 // @author       Ryan_CC
 // @match        https://ddys.art/*
@@ -45,6 +45,8 @@
         .post-box {width: 23% !important;margin-right: 1% !important;margin-bottom: 3% !important;}
         .post-box:nth-child(4n) {margin-right: 0 !important;}
         .single #header {position: relative !important;}
+        .post-image {padding-bottom: 0% !important;}
+        .post-content {padding: 1rem 7% !important;}
     `)
 
     // 工具函数
