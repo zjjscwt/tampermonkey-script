@@ -1,10 +1,11 @@
 ﻿// ==UserScript==
 // @name         Anime1.me Enhancer
-// @namespace    https://anime1.me/
-// @version      1.0.0
+// @namespace    https://github.com/zjjscwt/tampermonkey-script
+// @version      1.1.0
 // @description  為 Anime1.me 打造現代化UI：首頁卡片式封面展示（TMDB）+ 播放頁單播放器選集模式
 // @author       Antigravity
 // @match        https://anime1.me/*
+// @match        https://anime1.in/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
