@@ -1,7 +1,7 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         Anime1.me Enhancer
 // @namespace    https://github.com/zjjscwt/tampermonkey-script
-// @version      1.1.1
+// @version      2.0.0
 // @description  為 Anime1.me 打造現代化UI：首頁卡片式封面展示（TMDB）+ 播放頁單播放器選集模式
 // @author       Antigravity
 // @match        https://anime1.me/*
@@ -28,6 +28,7 @@
     const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
     const TMDB_IMAGE_ORIGINAL_BASE = 'https://image.tmdb.org/t/p/original';
     const API_RATE_INTERVAL = 300; // ms between requests
+    const WATCH_PROGRESS_STORAGE_KEY = 'ae_watch_progress_v1';
 
     function getStoredTmdbApiKey() {
         try {
@@ -47,32 +48,105 @@
         let shown = false;
         try { shown = !!GM_getValue(TMDB_API_HINT_SHOWN_KEY, false); } catch { /* ignore */ }
         if (shown) return;
-
-        alert(
-            '尚未設定 TMDB API Key。\n' +
-            '請點擊右上角主題切換按鈕旁的「設定」圖示來輸入 API。\n' +
-            'TMDB 申請入口：' + TMDB_API_APPLY_URL
-        );
         try { GM_setValue(TMDB_API_HINT_SHOWN_KEY, true); } catch { /* ignore */ }
+        setTimeout(() => openTmdbApiSettingsDialog({ firstTime: true }), 120);
     }
 
-    function openTmdbApiSettingsDialog() {
+    function openTmdbApiSettingsDialog(options = {}) {
+        const existing = document.getElementById('ae-tmdb-modal');
+        if (existing) return;
+
         const current = getStoredTmdbApiKey();
-        const input = prompt(
-            '請輸入/修改 TMDB API Key（留空可清除）\n申請入口：' + TMDB_API_APPLY_URL,
-            current
-        );
-        if (input === null) return;
-        const next = input.trim();
+        const overlay = document.createElement('div');
+        overlay.id = 'ae-tmdb-modal';
+        overlay.className = 'ae-modal-overlay';
+        overlay.innerHTML = `
+            <div class="ae-modal-panel" role="dialog" aria-modal="true" aria-labelledby="ae-modal-title">
+                <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
+                <h2 class="ae-modal-title" id="ae-modal-title">TMDB API 設定</h2>
+                ${options.firstTime ? '<p class="ae-modal-tip">首次使用需要先設定 API Key，下面三步即可完成。</p>' : ''}
+                <ol class="ae-modal-steps">
+                    <li>先到 <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer">TMDB 官網</a> 登入或註冊帳號</li>
+                    <li>進入 <a href="${TMDB_API_APPLY_URL}" target="_blank" rel="noopener noreferrer">API 申請頁</a> 建立 API，申请网址及内容可随意填写。</li>
+                    <li>取得 <strong>API Key (v3 auth)</strong> 後，回到這裡貼上並儲存</li>
+                </ol>
+                <div class="ae-modal-field">
+                    <label for="ae-tmdb-key-input">API Key (v3 auth)</label>
+                    <input id="ae-tmdb-key-input" type="text" placeholder="請貼上 TMDB API Key" value="${current}">
+                </div>
+                <div id="ae-modal-status" class="ae-modal-status"></div>
+                <div class="ae-modal-actions">
+                    <button type="button" id="ae-clear-tmdb-key" class="ae-modal-btn ae-modal-btn-danger">清除</button>
+                    <span class="ae-modal-actions-spacer"></span>
+                    <button type="button" id="ae-cancel-tmdb-key" class="ae-modal-btn ae-modal-btn-ghost">取消</button>
+                    <button type="button" id="ae-save-tmdb-key" class="ae-modal-btn ae-modal-btn-primary">儲存並重新整理</button>
+                </div>
+            </div>
+        `;
 
-        if (!next && current) {
-            const ok = confirm('確定要清除目前的 TMDB API Key 嗎？');
-            if (!ok) return;
-        }
+        document.body.appendChild(overlay);
 
-        setStoredTmdbApiKey(next);
-        alert(next ? 'TMDB API Key 已更新，頁面將重新整理。' : 'TMDB API Key 已清除，頁面將重新整理。');
-        location.reload();
+        const keyInput = overlay.querySelector('#ae-tmdb-key-input');
+        const statusEl = overlay.querySelector('#ae-modal-status');
+        const closeBtn = overlay.querySelector('.ae-modal-close');
+        const clearBtn = overlay.querySelector('#ae-clear-tmdb-key');
+        const saveBtn = overlay.querySelector('#ae-save-tmdb-key');
+        const cancelBtn = overlay.querySelector('#ae-cancel-tmdb-key');
+        let clearArmed = false;
+
+        const setStatus = (msg, type = 'info') => {
+            statusEl.textContent = msg || '';
+            statusEl.className = `ae-modal-status ${type ? `is-${type}` : ''}`;
+        };
+        const close = () => {
+            document.removeEventListener('keydown', onKeydown);
+            overlay.remove();
+        };
+        const onKeydown = (e) => {
+            if (e.key === 'Escape') close();
+        };
+        document.addEventListener('keydown', onKeydown);
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) close();
+        });
+        closeBtn.addEventListener('click', close);
+        cancelBtn.addEventListener('click', close);
+
+        clearBtn.addEventListener('click', () => {
+            if (!current && !keyInput.value.trim()) {
+                setStatus('目前沒有可清除的 API Key。', 'info');
+                return;
+            }
+            if (!clearArmed) {
+                clearArmed = true;
+                clearBtn.textContent = '再按一次確認清除';
+                setStatus('再次點擊「再按一次確認清除」即可刪除 API Key。', 'warn');
+                setTimeout(() => {
+                    clearArmed = false;
+                    clearBtn.textContent = '清除';
+                }, 2500);
+                return;
+            }
+            setStoredTmdbApiKey('');
+            setStatus('API Key 已清除，頁面即將重新整理。', 'success');
+            setTimeout(() => location.reload(), 500);
+        });
+
+        saveBtn.addEventListener('click', () => {
+            const next = keyInput.value.trim();
+            if (!next) {
+                setStatus('請先輸入 API Key，或使用「清除」按鈕。', 'warn');
+                keyInput.focus();
+                return;
+            }
+            setStoredTmdbApiKey(next);
+            setStatus('API Key 已儲存，頁面即將重新整理。', 'success');
+            setTimeout(() => location.reload(), 500);
+        });
+
+        keyInput.focus();
+        keyInput.select();
     }
 
     // ===================== FONT =====================
@@ -88,23 +162,34 @@
         document.head.appendChild(style);
     }
 
-    function isDarkModeActive() {
-        const darkCss = document.getElementById('darkmode-css');
-        return !!(darkCss && !darkCss.disabled);
-    }
-
-    function syncThemeClass() {
+    function forceDarkMode() {
         const root = document.documentElement;
-        const dark = isDarkModeActive();
-        root.classList.toggle('ae-dark', dark);
-        root.classList.toggle('ae-light', !dark);
+        root.classList.add('ae-dark');
+        root.classList.remove('ae-light');
+
+        try {
+            localStorage.setItem('auto_darkmode', '0');
+            localStorage.setItem('darkmode', '1');
+        } catch { /* ignore */ }
+
+        let darkCss = document.getElementById('darkmode-css');
+        if (!darkCss) {
+            darkCss = document.createElement('link');
+            darkCss.rel = 'stylesheet';
+            darkCss.id = 'darkmode-css';
+            darkCss.href = '/wp-content/themes/basic-shop-child/css/dark.min.css?ver=9';
+            darkCss.media = 'all';
+            (document.head || document.documentElement).appendChild(darkCss);
+        }
+        darkCss.disabled = false;
     }
 
-    function initThemeSync() {
-        syncThemeClass();
+    function initForcedDarkMode() {
+        forceDarkMode();
 
+        // Site scripts may mutate dark-mode stylesheet state after load; force it back.
         const mo = new MutationObserver(() => {
-            syncThemeClass();
+            forceDarkMode();
         });
         mo.observe(document.head || document.documentElement, {
             childList: true,
@@ -112,27 +197,12 @@
             attributes: true,
             attributeFilter: ['id', 'disabled', 'media', 'rel', 'href']
         });
-
-        // Theme buttons toggle state via page scripts; re-sync right after interaction.
-        document.addEventListener('click', (e) => {
-            const btn = e.target && e.target.closest
-                ? e.target.closest('#darkmodebtn, #lightmodebtn')
-                : null;
-            if (btn) {
-                setTimeout(syncThemeClass, 0);
-                setTimeout(syncThemeClass, 120);
-            }
-        }, true);
     }
 
-    function mountThemeControlToHeader() {
-        const control = document.querySelector('.darkmode-control');
+    function mountSettingsButtonToHeader() {
         const headerHost = document.querySelector('#masthead .header-content') || document.querySelector('#masthead');
-        if (!control || !headerHost) return;
-        if (control.parentElement !== headerHost) {
-            headerHost.appendChild(control);
-        }
-        ensureApiSettingsButton(control);
+        if (!headerHost) return;
+        ensureApiSettingsButton(headerHost);
     }
 
     function ensureApiSettingsButton(controlRoot) {
@@ -140,7 +210,7 @@
 
         const btn = document.createElement('button');
         btn.id = 'ae-tmdb-settings-btn';
-        btn.className = 'darkmodebtns';
+        btn.className = 'ae-settings-btn';
         btn.type = 'button';
         btn.title = 'TMDB API 設定';
         btn.innerHTML = `
@@ -176,6 +246,78 @@
         try {
             GM_setValue(getCacheKey(name), JSON.stringify({ timestamp: Date.now(), value }));
         } catch { /* quota exceeded, ignore */ }
+    }
+
+    function normalizeAnimeName(name) {
+        return String(name || '').trim().toLowerCase();
+    }
+
+    function getWatchProgressMap() {
+        try {
+            const raw = GM_getValue(WATCH_PROGRESS_STORAGE_KEY, '{}');
+            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            return (parsed && typeof parsed === 'object') ? parsed : {};
+        } catch {
+            return {};
+        }
+    }
+
+    function setWatchProgressMap(progressMap) {
+        try {
+            GM_setValue(WATCH_PROGRESS_STORAGE_KEY, JSON.stringify(progressMap || {}));
+        } catch { /* ignore */ }
+    }
+
+    function getWatchProgressForAnime(anime, progressMap = null) {
+        const map = progressMap || getWatchProgressMap();
+        const catKey = anime?.catId ? `cat:${anime.catId}` : '';
+        const nameKey = anime?.name ? `name:${normalizeAnimeName(anime.name)}` : '';
+        return (catKey && map[catKey]) || (nameKey && map[nameKey]) || null;
+    }
+
+    function saveWatchProgress({ catId, animeName, epNum, epTitle, postUrl, positionSec, durationSec }) {
+        if (!animeName) return;
+        const map = getWatchProgressMap();
+        const nameKey = `name:${normalizeAnimeName(animeName)}`;
+        const catKey = Number.isFinite(catId) ? `cat:${catId}` : '';
+        const prev = (catKey && map[catKey]) || map[nameKey] || {};
+        const record = {
+            ...prev,
+            catId: Number.isFinite(catId) ? catId : (prev.catId || null),
+            animeName: animeName || prev.animeName || '',
+            lastEpisode: Number.isFinite(epNum) ? epNum : (prev.lastEpisode ?? null),
+            lastEpisodeLabel: epTitle || prev.lastEpisodeLabel || '',
+            postUrl: postUrl || prev.postUrl || '',
+            updatedAt: Date.now()
+        };
+        if (Number.isFinite(positionSec)) {
+            record.positionSec = Math.max(0, Math.floor(positionSec));
+        }
+        if (Number.isFinite(durationSec) && durationSec > 0) {
+            record.durationSec = Math.floor(durationSec);
+            if (Number.isFinite(record.positionSec) && record.positionSec >= record.durationSec - 2) {
+                record.positionSec = 0;
+            }
+        }
+        map[nameKey] = record;
+        if (record.catId) map[`cat:${record.catId}`] = record;
+        setWatchProgressMap(map);
+    }
+
+    function deleteWatchProgressForAnime({ catId, animeName }) {
+        const map = getWatchProgressMap();
+        if (Number.isFinite(catId) && catId > 0) delete map[`cat:${catId}`];
+        if (animeName) delete map[`name:${normalizeAnimeName(animeName)}`];
+        setWatchProgressMap(map);
+    }
+
+    function getCurrentCategoryId() {
+        const qsCat = parseInt(new URLSearchParams(location.search).get('cat') || '', 10);
+        if (Number.isFinite(qsCat) && qsCat > 0) return qsCat;
+        const bodyCatClass = [...(document.body?.classList || [])].find(cls => /^category-\d+$/.test(cls));
+        if (!bodyCatClass) return null;
+        const classCat = parseInt(bodyCatClass.replace('category-', ''), 10);
+        return (Number.isFinite(classCat) && classCat > 0) ? classCat : null;
     }
 
     // TMDB request queue for rate limiting
@@ -339,6 +481,23 @@
         }
         #primary-menu a:hover::after { width: 80%; }
 
+        /* Mobile fallback: neutralize theme header token to avoid gray title block */
+        @media (max-width: 640px) {
+            :root {
+                --animeone-header-background: transparent !important;
+            }
+            .site-header,
+            .site-branding,
+            .site-navigation,
+            .main-navigation {
+                background: transparent !important;
+                border-color: transparent !important;
+            }
+            #masthead {
+                background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%) !important;
+            }
+        }
+
         /* ===== Footer ===== */
         #colophon {
             background: linear-gradient(135deg, #0f0c29, #1a1640) !important;
@@ -389,24 +548,17 @@
             border: none !important;
         }
 
-        /* Dark mode controls -> fixed top-right icon-only */
-        #masthead .darkmode-control {
+        /* Hide all site theme switch controls; script enforces dark mode */
+        .darkmode-control {
+            display: none !important;
+        }
+
+        #masthead #ae-tmdb-settings-btn.ae-settings-btn {
             position: absolute !important;
             top: 50% !important;
             right: 14px !important;
             transform: translateY(-50%) !important;
             z-index: 9999 !important;
-            display: flex !important;
-            gap: 0 !important;
-            margin: 0 !important;
-            padding: 4px !important;
-            border-radius: 999px !important;
-            border: 1px solid rgba(148,163,184,0.45) !important;
-            background: rgba(30,41,59,0.35) !important;
-            box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 3px 10px rgba(2,6,23,0.22) !important;
-            backdrop-filter: blur(6px) !important;
-        }
-        #masthead .darkmode-control .darkmodebtns {
             width: 34px !important;
             height: 34px !important;
             border-radius: 999px !important;
@@ -421,44 +573,186 @@
             backdrop-filter: none !important;
             transition: all 0.2s ease !important;
             cursor: pointer !important;
+            top: calc(50% + 2px) !important;
+            border: 1px solid rgba(148,163,184,0.45) !important;
+            background: rgba(30,41,59,0.35) !important;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 3px 10px rgba(2,6,23,0.22) !important;
+            backdrop-filter: blur(6px) !important;
         }
-        #masthead .darkmode-control #darkmodebtn,
-        #masthead .darkmode-control #lightmodebtn {
-            display: inline-flex !important;
-        }
-        #masthead .darkmode-control #automodebtn {
+        #masthead #ae-tmdb-settings-btn.ae-settings-btn > span {
             display: none !important;
         }
-        #masthead .darkmode-control #ae-tmdb-settings-btn {
-            display: inline-flex !important;
-        }
-        #masthead .darkmode-control .darkmodebtns > span {
-            display: none !important;
-        }
-        #masthead .darkmode-control .darkmodebtns .inline-svg {
+        #masthead #ae-tmdb-settings-btn.ae-settings-btn .inline-svg {
             width: 17px !important;
             height: 17px !important;
             margin: 0 !important;
         }
-        #masthead .darkmode-control .darkmodebtns .inline-svg path[stroke] {
+        #masthead #ae-tmdb-settings-btn.ae-settings-btn .inline-svg path[stroke] {
             stroke: currentColor !important;
             fill: none !important;
         }
-        #masthead .darkmode-control .darkmodebtns .inline-svg path:not([stroke]) {
+        #masthead #ae-tmdb-settings-btn.ae-settings-btn .inline-svg path:not([stroke]) {
             fill: currentColor !important;
         }
-        #masthead .darkmode-control .darkmodebtns.active {
-            background: #ffffff !important;
-            color: #0f172a !important;
-            box-shadow: 0 2px 7px rgba(15,23,42,0.28) !important;
-            pointer-events: none !important;
-            cursor: default !important;
-        }
-        #masthead .darkmode-control .darkmodebtns:hover {
+        #masthead #ae-tmdb-settings-btn.ae-settings-btn:hover {
             color: #c7d2fe !important;
         }
-        #masthead .darkmode-control .darkmodebtns.active:hover {
-            color: #0f172a !important;
+
+        .ae-modal-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 2147483647;
+            background: rgba(2, 6, 23, 0.72);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            backdrop-filter: blur(4px);
+        }
+        .ae-modal-panel {
+            width: min(640px, 100%);
+            background: linear-gradient(135deg, rgba(15,12,41,0.98), rgba(36,36,62,0.96));
+            border: 1px solid rgba(139,92,246,0.35);
+            border-radius: 16px;
+            box-shadow: 0 22px 52px rgba(2,6,23,0.55);
+            padding: 18px 18px 16px;
+            color: rgba(255,255,255,0.92);
+            position: relative;
+        }
+        .ae-modal-title {
+            margin: 0 0 8px !important;
+            font-size: 22px !important;
+            font-weight: 700 !important;
+            color: #ddd6fe !important;
+        }
+        .ae-modal-tip {
+            margin: 0 0 10px !important;
+            color: rgba(255,255,255,0.72) !important;
+            font-size: 13px !important;
+        }
+        .ae-modal-steps {
+            margin: 0 0 14px !important;
+            padding-left: 20px !important;
+            color: rgba(255,255,255,0.85) !important;
+            font-size: 13px !important;
+            line-height: 1.6 !important;
+        }
+        .ae-modal-field {
+            margin-bottom: 12px;
+        }
+        .ae-modal-field label {
+            display: block;
+            margin-bottom: 6px;
+            color: rgba(196,181,253,0.92);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        .ae-modal-steps a {
+            color: #4ade80 !important;
+            text-decoration: underline !important;
+            transition: color 0.2s ease;
+        }
+        .ae-modal-steps a:hover {
+            color: #e9d5ff !important;
+        }
+        .ae-modal-field input {
+            width: 100%;
+            height: 38px;
+            border-radius: 10px;
+            border: 1px solid rgba(139,92,246,0.35);
+            background: rgba(30,41,59,0.42);
+            color: rgba(255,255,255,0.95);
+            padding: 0 12px;
+            outline: none;
+        }
+        .ae-modal-field input:focus {
+            border-color: rgba(167,139,250,0.9);
+            box-shadow: 0 0 0 3px rgba(139,92,246,0.2);
+        }
+        .ae-modal-status {
+            min-height: 20px;
+            margin-bottom: 10px;
+            font-size: 12px;
+            color: rgba(255,255,255,0.64);
+        }
+        .ae-modal-status.is-success { color: #86efac; }
+        .ae-modal-status.is-error { color: #fca5a5; }
+        .ae-modal-status.is-warn { color: #fde68a; }
+        .ae-modal-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .ae-modal-actions-spacer {
+            flex: 1;
+        }
+        .ae-modal-btn {
+            height: 36px;
+            border-radius: 10px;
+            border: 1px solid transparent;
+            padding: 0 12px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-family: inherit;
+        }
+        .ae-modal-btn-primary {
+            background: linear-gradient(135deg, #7c3aed, #a855f7);
+            color: #fff;
+            border-color: rgba(196,181,253,0.35);
+        }
+        .ae-modal-btn-primary:hover {
+            filter: brightness(1.08);
+        }
+        .ae-modal-btn-ghost {
+            background: rgba(30,41,59,0.48);
+            border-color: rgba(148,163,184,0.4);
+            color: rgba(226,232,240,0.92);
+        }
+        .ae-modal-btn-ghost:hover {
+            background: rgba(51,65,85,0.7);
+        }
+        .ae-modal-btn-danger {
+            background: rgba(127,29,29,0.72);
+            border-color: rgba(248,113,113,0.55);
+            color: #fecaca;
+        }
+        .ae-modal-btn-danger:hover {
+            background: rgba(185,28,28,0.9);
+            color: #fff;
+        }
+        .ae-modal-close {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 30px;
+            height: 30px;
+            border-radius: 999px;
+            border: 1px solid rgba(148,163,184,0.45);
+            background: rgba(30,41,59,0.52);
+            color: rgba(226,232,240,0.9);
+            font-size: 19px;
+            line-height: 1;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .ae-modal-close:hover {
+            background: rgba(71,85,105,0.85);
+            color: #fff;
+        }
+        @media (max-width: 640px) {
+            .ae-modal-panel {
+                padding: 14px 12px 12px;
+                border-radius: 12px;
+            }
+            .ae-modal-title { font-size: 18px !important; }
+            .ae-modal-btn {
+                height: 34px;
+            }
         }
     `);
 
@@ -537,13 +831,15 @@
                 </div>
                 <div class="ae-filter-pills">
                     <button class="ae-pill active" data-filter="all">全部</button>
+                    <button class="ae-pill" data-filter="continue">继续观看</button>
                     <button class="ae-pill" data-filter="airing">連載中</button>
                     <button class="ae-pill" data-filter="completed">已完結</button>
                     <div class="ae-season-filters" id="ae-season-filters"></div>
                 </div>
             </div>
             <div class="ae-grid" id="ae-grid"></div>
-            <div class="ae-pagination" id="ae-pagination"></div>
+            <div class="ae-infinite-status" id="ae-infinite-status"></div>
+            <div class="ae-scroll-sentinel" id="ae-scroll-sentinel" aria-hidden="true"></div>
         `;
 
         // Build season filters dynamically
@@ -571,54 +867,105 @@
         });
 
         const grid = document.getElementById('ae-grid');
-        let currentPage = 1;
-        const perPage = 24;
+        const statusEl = document.getElementById('ae-infinite-status');
+        const sentinelEl = document.getElementById('ae-scroll-sentinel');
+        const batchSize = 24;
         let filteredList = [...animeList];
         let currentFilter = 'all';
         let currentSeason = '';
+        let continueMetaByCat = new Map();
+        let renderCursor = 0;
+        let loadingMore = false;
 
         function filterAndRender() {
+            const watchMap = getWatchProgressMap();
+            continueMetaByCat = new Map();
             const query = document.getElementById('ae-search-input')?.value?.toLowerCase() || '';
             filteredList = animeList.filter(a => {
+                const progress = getWatchProgressForAnime(a, watchMap);
+                if (progress) continueMetaByCat.set(a.catId, progress);
                 const matchesSearch = !query || a.name.toLowerCase().includes(query);
                 const matchesFilter = currentFilter === 'all' ||
+                    (currentFilter === 'continue' && !!progress) ||
                     (currentFilter === 'airing' && a.episodes.includes('連載中')) ||
                     (currentFilter === 'completed' && !a.episodes.includes('連載中'));
                 const matchesSeason = !currentSeason || `${a.year}年${a.season}季` === currentSeason;
                 return matchesSearch && matchesFilter && matchesSeason;
             });
+            if (currentFilter === 'continue') {
+                filteredList.sort((a, b) => {
+                    const ta = continueMetaByCat.get(a.catId)?.updatedAt || 0;
+                    const tb = continueMetaByCat.get(b.catId)?.updatedAt || 0;
+                    return tb - ta;
+                });
+            }
             document.getElementById('ae-visible-count').textContent = filteredList.length;
-            currentPage = 1;
-            renderPage();
+            renderCursor = 0;
+            grid.innerHTML = '';
+            updateStatus();
+            renderNextBatch();
         }
 
-        function renderPage() {
-            const start = (currentPage - 1) * perPage;
-            const pageItems = filteredList.slice(start, start + perPage);
+        function updateStatus() {
+            if (!statusEl) return;
+            if (filteredList.length === 0) {
+                statusEl.textContent = '沒有符合條件的動畫';
+                return;
+            }
+            if (loadingMore) {
+                statusEl.textContent = '正在載入更多動畫...';
+                return;
+            }
+            if (renderCursor >= filteredList.length) {
+                statusEl.textContent = `已載入全部 ${filteredList.length} 部動畫`;
+                return;
+            }
+            statusEl.textContent = '向下捲動以載入更多';
+        }
 
-            grid.innerHTML = '';
-            pageItems.forEach((anime, idx) => {
-                grid.appendChild(createCard(anime, start + idx));
+        function renderNextBatch() {
+            if (loadingMore || renderCursor >= filteredList.length) {
+                updateStatus();
+                return;
+            }
+            loadingMore = true;
+            updateStatus();
+
+            const start = renderCursor;
+            const batchItems = filteredList.slice(start, start + batchSize);
+            const frag = document.createDocumentFragment();
+
+            batchItems.forEach((anime, idx) => {
+                frag.appendChild(createCard(anime, start + idx));
+            });
+            grid.appendChild(frag);
+
+            batchItems.forEach((anime, idx) => {
+                const cardKey = `${anime.catId}-${start + idx}`;
+                loadCover(anime.name, cardKey);
             });
 
-            renderPagination(Math.ceil(filteredList.length / perPage));
-
-            // Fetch covers
-            pageItems.forEach((anime, idx) => {
-                loadCover(anime.name, start + idx);
-            });
+            renderCursor += batchItems.length;
+            loadingMore = false;
+            updateStatus();
         }
 
         function createCard(anime, index) {
             const card = document.createElement('a');
+            const cardKey = `${anime.catId}-${index}`;
             card.href = anime.url;
             card.className = 'ae-card';
             card.dataset.index = index;
-            card.style.animationDelay = `${(index % perPage) * 0.03}s`;
+            card.dataset.cardKey = cardKey;
+            card.style.animationDelay = `${(index % batchSize) * 0.03}s`;
 
             const isAiring = anime.episodes.includes('連載中');
             const epMatch = anime.episodes.match(/\((\d+)\)/) || anime.episodes.match(/^(\d[\d-]*)$/);
             const epText = epMatch ? epMatch[1] : anime.episodes;
+            const progress = continueMetaByCat.get(anime.catId);
+            const progressText = progress?.lastEpisode
+                ? `上次觀看到 EP ${String(progress.lastEpisode).padStart(2, '0')}`
+                : (progress?.lastEpisodeLabel ? `上次觀看到 ${progress.lastEpisodeLabel}` : '');
 
             card.innerHTML = `
                 <div class="ae-card-poster">
@@ -633,6 +980,8 @@
                     ? '<span class="ae-badge ae-badge-airing">● 連載中</span>'
                     : '<span class="ae-badge ae-badge-done">已完結</span>'}
                     ${epText ? `<span class="ae-badge ae-badge-ep">${isAiring ? 'EP ' : ''}${epText}</span>` : ''}
+                    ${progressText ? `<span class="ae-badge ae-badge-progress">${progressText}</span>` : ''}
+                    ${(progressText && currentFilter === 'continue') ? '<button type="button" class="ae-progress-delete" title="刪除觀看記錄" aria-label="刪除觀看記錄">×</button>' : ''}
                     <div class="ae-card-rating" id="ae-rating-${index}" style="display:none;">
                         <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
                         <span class="ae-rating-val"></span>
@@ -649,12 +998,12 @@
             return card;
         }
 
-        async function loadCover(name, index) {
-            const card = grid.querySelector(`.ae-card[data-index="${index}"]`);
+        async function loadCover(name, cardKey) {
+            const card = grid.querySelector(`.ae-card[data-card-key="${cardKey}"]`);
             if (!card) return;
             const img = card.querySelector('.ae-card-img');
             const placeholder = card.querySelector('.ae-card-poster-placeholder');
-            const ratingEl = card.querySelector(`#ae-rating-${index}`);
+            const ratingEl = card.querySelector(`#ae-rating-${card.dataset.index}`);
 
             const data = await searchTmdb(name);
 
@@ -687,7 +1036,7 @@
                                     const contentType = response.responseHeaders?.match(/content-type:\s*([^\r\n;]+)/i)?.[1] || 'image/jpeg';
                                     const dataUrl = `data:${contentType};base64,${btoa(binary)}`;
                                     img.onerror = (ev) => {
-                                        console.error('[Anime1 Enhancer] Data URL render failed:', { name, index, ev });
+                                        console.error('[Anime1 Enhancer] Data URL render failed:', { name, cardKey, ev });
                                     };
                                     showImage(dataUrl);
                                 } catch (e) {
@@ -719,31 +1068,6 @@
             }
         }
 
-        function renderPagination(totalPages) {
-            const pag = document.getElementById('ae-pagination');
-            if (totalPages <= 1) { pag.innerHTML = ''; return; }
-            let html = '';
-            html += `<button class="ae-page-btn ${currentPage === 1 ? 'disabled' : ''}" data-page="${currentPage - 1}">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M15 18l-6-6 6-6"/></svg></button>`;
-            const maxV = 7;
-            let s = Math.max(1, currentPage - Math.floor(maxV / 2));
-            let e = Math.min(totalPages, s + maxV - 1);
-            if (e - s < maxV - 1) s = Math.max(1, e - maxV + 1);
-            if (s > 1) { html += `<button class="ae-page-btn" data-page="1">1</button>`; if (s > 2) html += `<span class="ae-page-dots">…</span>`; }
-            for (let i = s; i <= e; i++) html += `<button class="ae-page-btn ${i === currentPage ? 'active' : ''}" data-page="${i}">${i}</button>`;
-            if (e < totalPages) { if (e < totalPages - 1) html += `<span class="ae-page-dots">…</span>`; html += `<button class="ae-page-btn" data-page="${totalPages}">${totalPages}</button>`; }
-            html += `<button class="ae-page-btn ${currentPage === totalPages ? 'disabled' : ''}" data-page="${currentPage + 1}">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M9 18l6-6-6-6"/></svg></button>`;
-            pag.innerHTML = html;
-            pag.querySelectorAll('.ae-page-btn:not(.disabled)').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    currentPage = parseInt(btn.dataset.page);
-                    renderPage();
-                    container.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                });
-            });
-        }
-
         // Events
         document.getElementById('ae-search-input')?.addEventListener('input', debounce(filterAndRender, 300));
         document.querySelectorAll('.ae-pill:not(.ae-pill-season)').forEach(pill => {
@@ -754,8 +1078,37 @@
                 filterAndRender();
             });
         });
+        grid.addEventListener('click', (event) => {
+            const btn = event.target.closest('.ae-progress-delete');
+            if (!btn) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const card = btn.closest('.ae-card');
+            if (!card) return;
+            const index = Number(card.dataset.index);
+            const anime = Number.isFinite(index) ? filteredList[index] : null;
+            if (!anime) return;
+            const ok = confirm(`確定要刪除「${anime.name}」的觀看記錄嗎？`);
+            if (!ok) return;
+            deleteWatchProgressForAnime({ catId: anime.catId, animeName: anime.name });
+            filterAndRender();
+        });
 
-        renderPage();
+        if ('IntersectionObserver' in window && sentinelEl) {
+            const loadObserver = new IntersectionObserver((entries) => {
+                const shouldLoad = entries.some(entry => entry.isIntersecting);
+                if (shouldLoad) renderNextBatch();
+            }, { root: null, rootMargin: '800px 0px', threshold: 0 });
+            loadObserver.observe(sentinelEl);
+        } else {
+            window.addEventListener('scroll', debounce(() => {
+                if (!sentinelEl) return;
+                const rect = sentinelEl.getBoundingClientRect();
+                if (rect.top < window.innerHeight + 800) renderNextBatch();
+            }, 100));
+        }
+
+        filterAndRender();
     }
 
     function fetchAnimeList() {
@@ -831,6 +1184,16 @@
             color: rgba(255,255,255,0.7); font-size: 13px; cursor: pointer;
             transition: all 0.25s ease; font-family: inherit;
         }
+        .ae-pill[data-filter="continue"] {
+            border-color: rgba(34,197,94,0.46);
+            background: rgba(34,197,94,0.16);
+            color: #bbf7d0;
+        }
+        .ae-pill[data-filter="continue"]:hover:not(.active) {
+            background: rgba(34,197,94,0.26);
+            border-color: rgba(74,222,128,0.75);
+            color: #dcfce7;
+        }
         .ae-pill:hover { background: rgba(139,92,246,0.2); border-color: rgba(139,92,246,0.4); }
         .ae-pill.active {
             background: linear-gradient(135deg, #7c3aed, #a855f7);
@@ -848,6 +1211,12 @@
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
             gap: 20px;
+        }
+        @media (max-width: 640px) {
+            .ae-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 12px;
+            }
         }
         @media (min-width: 768px) { .ae-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 22px; } }
         @media (min-width: 1200px) { .ae-grid { grid-template-columns: repeat(6, 1fr); gap: 24px; } }
@@ -902,8 +1271,48 @@
         }
         .ae-badge-done { top: 8px; left: 8px; background: rgba(107,114,128,0.8); color: #e5e7eb; }
         .ae-badge-ep {
-            top: 8px; right: 8px; background: rgba(139,92,246,0.85); color: #fff;
+            left: 8px; right: auto; bottom: 8px; background: rgba(139,92,246,0.85); color: #fff;
             box-shadow: 0 2px 8px rgba(139,92,246,0.3);
+        }
+        .ae-badge-progress {
+            left: 50%;
+            right: auto;
+            bottom: 34px;
+            transform: translateX(-50%);
+            max-width: calc(100% - 16px);
+            text-align: center;
+            background: rgba(15,23,42,0.72);
+            color: #e2e8f0;
+            border: 1px solid rgba(148,163,184,0.35);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .ae-progress-delete {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 22px;
+            height: 22px;
+            border-radius: 999px;
+            border: 1px solid rgba(248,113,113,0.6);
+            background: rgba(127,29,29,0.72);
+            color: #fecaca;
+            font-size: 15px;
+            line-height: 1;
+            font-weight: 700;
+            cursor: pointer;
+            z-index: 3;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            transition: all 0.2s ease;
+        }
+        .ae-progress-delete:hover {
+            background: rgba(185,28,28,0.9);
+            border-color: rgba(252,165,165,0.9);
+            color: #fff;
         }
         .ae-card-rating {
             position: absolute; bottom: 8px; right: 8px;
@@ -928,39 +1337,21 @@
         }
         .ae-meta-sub { font-size: 11px; color: rgba(255,255,255,0.45); }
 
-        /* Pagination */
-        .ae-pagination {
-            display: flex; justify-content: center; align-items: center;
-            gap: 6px; margin-top: 36px; padding-bottom: 20px;
+        /* Infinite scroll status */
+        .ae-infinite-status {
+            text-align: center;
+            margin-top: 28px;
+            color: rgba(255,255,255,0.55);
+            font-size: 13px;
+            letter-spacing: 0.2px;
+            min-height: 20px;
         }
-        .ae-page-btn {
-            min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-            border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);
-            background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.7);
-            font-size: 13px; cursor: pointer; transition: all 0.2s ease; font-family: inherit;
+        .ae-scroll-sentinel {
+            width: 100%;
+            height: 1px;
+            margin-top: 8px;
+            margin-bottom: 24px;
         }
-        .ae-page-btn:hover:not(.disabled):not(.active) { background: rgba(139,92,246,0.2); border-color: rgba(139,92,246,0.4); }
-        .ae-page-btn.active {
-            background: linear-gradient(135deg, #7c3aed, #a855f7);
-            border-color: transparent; color: #fff; font-weight: 600;
-            box-shadow: 0 4px 15px rgba(139,92,246,0.35);
-        }
-        .ae-page-btn.disabled { opacity: 0.3; cursor: not-allowed; }
-        .ae-page-dots { color: rgba(255,255,255,0.3); font-size: 14px; padding: 0 4px; }
-
-        /* Light mode */
-        :root.ae-light .ae-search-wrapper { background: rgba(0,0,0,0.03); border-color: rgba(139,92,246,0.15); }
-        :root.ae-light .ae-search-wrapper:focus-within { background: rgba(0,0,0,0.05); }
-        :root.ae-light #ae-search-input::placeholder { color: rgba(0,0,0,0.35); }
-        :root.ae-light .ae-search-count { color: rgba(0,0,0,0.4); border-left-color: rgba(0,0,0,0.1); }
-        :root.ae-light .ae-pill { color: rgba(0,0,0,0.65); background: rgba(139,92,246,0.05); }
-        :root.ae-light .ae-card { background: #fff; border-color: rgba(0,0,0,0.08); box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
-        :root.ae-light .ae-card:hover { box-shadow: 0 20px 40px rgba(139,92,246,0.15), 0 0 0 1px rgba(139,92,246,0.2); }
-        :root.ae-light .ae-card-title { color: #1a1a2e!important; }
-        :root.ae-light .ae-card-poster { background: linear-gradient(145deg, #f0ecff, #e8e4f4); }
-        :root.ae-light .ae-card-poster-placeholder svg { color: rgba(139,92,246,0.2); }
-        :root.ae-light .ae-page-btn { background: #fff; border-color: rgba(0,0,0,0.1); color: #333; }
-        :root.ae-light .ae-meta-sub { color: rgba(0,0,0,0.4); }
 
         :root.ae-dark #ae-search-input { color: rgba(255,255,255,0.92)!important; }
         :root.ae-dark #ae-search-input::placeholder { color: rgba(255,255,255,0.4)!important; }
@@ -1015,6 +1406,7 @@
         if (episodes.length === 0) return;
 
         const pageTitle = document.querySelector('.page-header .page-title')?.textContent?.trim() || '';
+        const playCatId = getCurrentCategoryId();
         const main = document.getElementById('main');
         const primaryDiv = document.getElementById('primary');
 
@@ -1046,29 +1438,26 @@
                     返回列表
                 </a>
             </div>
-            <div class="ap-video-wrapper" id="ap-video-wrapper"></div>
-            <div class="ap-controls-bar">
-                <button class="ap-nav-btn" id="ap-prev-ep">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M15 18l-6-6 6-6"/></svg>
-                    上一集
-                </button>
-                <div class="ap-ep-info-center" id="ap-ep-info-center"></div>
-                <button class="ap-nav-btn" id="ap-next-ep">
-                    下一集
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M9 18l6-6-6-6"/></svg>
-                </button>
-            </div>
-            <div class="ap-episode-section">
-                <div class="ap-ep-header">
-                    <h2 class="ap-ep-title">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-                            <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
-                        </svg>
-                        選集列表
-                    </h2>
-                    <span class="ap-ep-count">共 ${episodes.length} 集</span>
+            <div class="ap-main-layout">
+                <div class="ap-player-column">
+                    <div class="ap-content-row">
+                        <div class="ap-left-stack">
+                            <div class="ap-video-wrapper" id="ap-video-wrapper"></div>
+                        </div>
+                        <div class="ap-episode-section">
+                            <div class="ap-ep-header">
+                                <h2 class="ap-ep-title">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+                                        <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+                                    </svg>
+                                    選集列表
+                                </h2>
+                                <span class="ap-ep-count">共 ${episodes.length} 集</span>
+                            </div>
+                            <div class="ap-ep-grid" id="ap-ep-grid"></div>
+                        </div>
+                    </div>
                 </div>
-                <div class="ap-ep-grid" id="ap-ep-grid"></div>
             </div>
         `;
         main.insertBefore(section, main.firstChild);
@@ -1088,6 +1477,18 @@
         let currentIdx = 0;
         let mountedVjs = null;
         let playPoster = null;
+        let trackedVideo = null;
+        let saveHandlers = null;
+        let lastProgressSaveAt = 0;
+        let lastProgressSec = -1;
+        const storedProgress = getWatchProgressForAnime({ catId: playCatId, name: pageTitle });
+        let pendingResume = (storedProgress && Number.isFinite(storedProgress.positionSec))
+            ? {
+                postUrl: storedProgress.postUrl || '',
+                lastEpisode: storedProgress.lastEpisode || null,
+                positionSec: storedProgress.positionSec
+            }
+            : null;
 
         function pauseVideoIn(container) {
             if (!container) return;
@@ -1107,6 +1508,73 @@
             if (posterEl) posterEl.style.backgroundImage = `url("${posterUrl}")`;
         }
 
+        function persistPlaybackProgress(force = false) {
+            if (!mountedVjs) return;
+            const video = mountedVjs.querySelector('video');
+            const ep = episodes[currentIdx];
+            if (!video || !ep) return;
+            const now = Date.now();
+            const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+            const duration = Number.isFinite(video.duration) ? video.duration : null;
+            const sec = Math.max(0, Math.floor(currentTime));
+            if (!force) {
+                if (sec === lastProgressSec) return;
+                if (now - lastProgressSaveAt < 5000) return;
+            }
+            saveWatchProgress({
+                catId: playCatId,
+                animeName: pageTitle,
+                epNum: Number.isFinite(ep.epNum) ? ep.epNum : (currentIdx + 1),
+                epTitle: ep.title,
+                postUrl: ep.postUrl,
+                positionSec: sec,
+                durationSec: duration
+            });
+            lastProgressSaveAt = now;
+            lastProgressSec = sec;
+        }
+
+        function unbindVideoProgress() {
+            if (!trackedVideo || !saveHandlers) return;
+            trackedVideo.removeEventListener('timeupdate', saveHandlers.onTimeUpdate);
+            trackedVideo.removeEventListener('pause', saveHandlers.onPause);
+            trackedVideo.removeEventListener('ended', saveHandlers.onEnded);
+            trackedVideo.removeEventListener('seeking', saveHandlers.onSeeking);
+            trackedVideo = null;
+            saveHandlers = null;
+        }
+
+        function bindVideoProgress(video) {
+            if (!video || trackedVideo === video) return;
+            unbindVideoProgress();
+            saveHandlers = {
+                onTimeUpdate: () => persistPlaybackProgress(false),
+                onPause: () => persistPlaybackProgress(true),
+                onEnded: () => persistPlaybackProgress(true),
+                onSeeking: () => persistPlaybackProgress(true)
+            };
+            trackedVideo = video;
+            video.addEventListener('timeupdate', saveHandlers.onTimeUpdate);
+            video.addEventListener('pause', saveHandlers.onPause);
+            video.addEventListener('ended', saveHandlers.onEnded);
+            video.addEventListener('seeking', saveHandlers.onSeeking);
+        }
+
+        function restorePlaybackTime(video, seconds) {
+            if (!video || !Number.isFinite(seconds) || seconds <= 1) return;
+            const seek = () => {
+                const duration = Number.isFinite(video.duration) ? video.duration : null;
+                const target = duration ? Math.min(seconds, Math.max(0, duration - 1.5)) : seconds;
+                if (target <= 0) return;
+                try { video.currentTime = target; } catch { /* ignore */ }
+            };
+            if (video.readyState >= 1) {
+                seek();
+            } else {
+                video.addEventListener('loadedmetadata', seek, { once: true });
+            }
+        }
+
         function switchEp(index) {
             if (index < 0 || index >= episodes.length) return;
             currentIdx = index;
@@ -1115,12 +1583,10 @@
             // Update buttons
             epGrid.querySelectorAll('.ap-ep-btn').forEach((btn, i) => btn.classList.toggle('active', i === index));
             document.getElementById('ap-current-ep-label').textContent = ep.title;
-            document.getElementById('ap-ep-info-center').textContent = `${index + 1} / ${episodes.length}`;
-            document.getElementById('ap-prev-ep').disabled = index === 0;
-            document.getElementById('ap-next-ep').disabled = index === episodes.length - 1;
 
             // Pause every episode player first to prevent background playback.
             episodes.forEach(item => pauseVideoIn(item.vjsContainer));
+            persistPlaybackProgress(true);
 
             // Unmount previous mounted player node.
             const wrapper = document.getElementById('ap-video-wrapper');
@@ -1135,15 +1601,31 @@
                 wrapper.appendChild(ep.vjsContainer);
                 mountedVjs = ep.vjsContainer;
                 applyEpisodePoster(ep.vjsContainer, playPoster);
+                const video = ep.vjsContainer.querySelector('video');
+                if (video) {
+                    bindVideoProgress(video);
+                    const shouldResume = pendingResume &&
+                        ((pendingResume.postUrl && pendingResume.postUrl === ep.postUrl) ||
+                            (Number.isFinite(pendingResume.lastEpisode) && pendingResume.lastEpisode === ep.epNum));
+                    if (shouldResume) {
+                        restorePlaybackTime(video, pendingResume.positionSec);
+                        pendingResume = null;
+                    }
+                }
             }
+
+            saveWatchProgress({
+                catId: playCatId,
+                animeName: pageTitle,
+                epNum: Number.isFinite(ep.epNum) ? ep.epNum : (index + 1),
+                epTitle: ep.title,
+                postUrl: ep.postUrl
+            });
 
             // Scroll
             const activeBtn = epGrid.querySelector('.ap-ep-btn.active');
             activeBtn?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
         }
-
-        document.getElementById('ap-prev-ep').addEventListener('click', () => switchEp(currentIdx - 1));
-        document.getElementById('ap-next-ep').addEventListener('click', () => switchEp(currentIdx + 1));
 
         function centerPlayerOnOpen() {
             const wrapper = document.getElementById('ap-video-wrapper');
@@ -1159,10 +1641,24 @@
         if (urlP) {
             const found = episodes.findIndex(ep => ep.postUrl.includes('/' + urlP));
             if (found >= 0) startIdx = found;
+        } else if (storedProgress) {
+            const byUrl = storedProgress.postUrl
+                ? episodes.findIndex(ep => ep.postUrl === storedProgress.postUrl)
+                : -1;
+            if (byUrl >= 0) {
+                startIdx = byUrl;
+            } else if (Number.isFinite(storedProgress.lastEpisode)) {
+                const byEp = episodes.findIndex(ep => ep.epNum === storedProgress.lastEpisode);
+                if (byEp >= 0) startIdx = byEp;
+            }
         }
         switchEp(startIdx);
         requestAnimationFrame(() => {
             setTimeout(centerPlayerOnOpen, 60);
+        });
+        window.addEventListener('beforeunload', () => persistPlaybackProgress(true));
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') persistPlaybackProgress(true);
         });
 
         // Fetch banner
@@ -1185,6 +1681,19 @@
     const PLAYPAGE_CSS = `
         .page-header { display: none !important; }
 
+        body.archive.category,
+        body.archive.category #page,
+        body.archive.category #content,
+        body.archive.category .site-content,
+        body.archive.category #primary,
+        body.archive.category #main,
+        body.archive.category #colophon {
+            background: #0b0b16 !important;
+        }
+        body.archive.category #colophon .scroll-top {
+            display: none !important;
+        }
+
         .ap-player-section {
             margin: 0 auto;
             max-width: 100%;
@@ -1192,6 +1701,26 @@
             clear: both !important;
             position: relative !important;
             z-index: 1 !important;
+        }
+        .ap-main-layout {
+            display: block;
+        }
+        .ap-player-column {
+            min-width: 0;
+            background: rgba(15,12,41,0.68);
+            border: 1px solid rgba(139,92,246,0.2);
+            border-radius: 12px;
+            backdrop-filter: blur(12px);
+            overflow: hidden;
+        }
+        .ap-content-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: stretch;
+            min-height: 100%;
+        }
+        .ap-left-stack {
+            min-width: 0;
         }
 
         /* Prevent nested scroll containers from site/theme CSS on play page */
@@ -1214,8 +1743,15 @@
         }
         .ap-anime-title {
             font-size: 22px!important; font-weight: 700!important; margin: 0 0 6px!important;
-            background: linear-gradient(135deg, #e2d9f3, #c084fc);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent; line-height: 1.3!important;
+            color: #e9ddff !important;
+            line-height: 1.3!important;
+        }
+        @supports (-webkit-background-clip: text) {
+            .ap-anime-title {
+                background: linear-gradient(135deg, #e2d9f3, #c084fc);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }
         }
         .ap-now-playing { display: flex; align-items: center; gap: 8px; }
         .ap-now-label {
@@ -1233,22 +1769,16 @@
 
         .ap-video-wrapper {
             background: #000;
-            border-left: 1px solid rgba(139,92,246,0.2);
-            border-right: 1px solid rgba(139,92,246,0.2);
             position: relative !important;
             overflow: hidden !important;
             width: 100% !important;
+            border-radius: 0 !important;
         }
         .ap-video-wrapper::before {
             content: '';
             display: block;
             width: 100%;
             padding-top: 56.25%; /* 16:9 */
-        }
-        .ap-video-wrapper + .ap-controls-bar {
-            position: static !important;
-            z-index: auto !important;
-            margin-top: 0;
         }
         .ap-video-wrapper .vjscontainer {
             position: absolute !important;
@@ -1278,36 +1808,21 @@
             z-index: 30 !important;
         }
 
-        .ap-controls-bar {
-            display: flex; align-items: center; justify-content: space-between; padding: 12px 20px;
-            background: rgba(15,12,41,0.9);
-            border-left: 1px solid rgba(139,92,246,0.2); border-right: 1px solid rgba(139,92,246,0.2);
-            backdrop-filter: blur(12px);
-            position: static !important;
-            overflow: visible !important;
-            z-index: auto !important;
-        }
-        .ap-ep-info-center {
-            font-size: 14px; color: rgba(255,255,255,0.5); font-weight: 500;
-            font-variant-numeric: tabular-nums;
-        }
-        .ap-nav-btn {
-            display: flex; align-items: center; gap: 6px; padding: 8px 18px; border-radius: 10px;
-            border: 1px solid rgba(139,92,246,0.25); background: rgba(139,92,246,0.1);
-            color: #c4b5fd; font-size: 13px; cursor: pointer; transition: all 0.25s ease; font-family: inherit;
-        }
-        .ap-nav-btn:hover:not(:disabled) { background: rgba(139,92,246,0.25); border-color: rgba(139,92,246,0.5); transform: scale(1.03); }
-        .ap-nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-
         .ap-episode-section {
+            width: 272px;
             padding: 20px 24px 28px;
             background: rgba(15,12,41,0.6);
-            border: 1px solid rgba(139,92,246,0.2); border-top: none;
-            border-radius: 0 0 16px 16px; backdrop-filter: blur(12px);
+            border-left: 1px solid rgba(139,92,246,0.2);
+            border-top: none;
+            border-right: none;
+            border-bottom: none;
+            border-radius: 0;
             position: static !important;
             overflow: visible !important;
             z-index: auto !important;
             margin-top: 0 !important;
+            max-height: calc(100vh - 220px);
+            overflow-y: auto !important;
         }
         .ap-ep-header {
             display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;
@@ -1319,9 +1834,15 @@
         .ap-ep-title svg { color: #a78bfa; }
         .ap-ep-count { font-size: 13px; color: rgba(255,255,255,0.4); }
 
-        .ap-ep-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+        .ap-ep-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+        }
         .ap-ep-btn {
-            min-width: 52px; height: 40px; display: flex; align-items: center; justify-content: center;
+            width: 100%;
+            min-width: 0;
+            height: 40px; display: flex; align-items: center; justify-content: center;
             border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);
             background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.7);
             cursor: pointer; transition: all 0.25s ease; font-family: inherit;
@@ -1334,32 +1855,35 @@
             box-shadow: 0 4px 15px rgba(139,92,246,0.4); transform: scale(1.05);
         }
 
-        /* Light mode */
-        :root.ae-light .ap-title-bar { background: linear-gradient(135deg, #f8f6ff, #eee8ff, #f3f0ff); }
-        :root.ae-light .ap-anime-title { background: linear-gradient(135deg, #4c1d95, #7c3aed); -webkit-background-clip: text; }
-        :root.ae-light .ap-controls-bar { background: #f5f3ff; }
-        :root.ae-light .ap-episode-section { background: #faf8ff; border-color: rgba(139,92,246,0.15); }
-        :root.ae-light .ap-now-ep { color: #4a4a6a; }
-        :root.ae-light .ap-ep-title { color: #1a1a2e!important; }
-        :root.ae-light .ap-ep-btn { background: #fff; border-color: rgba(0,0,0,0.1); color: #4a4a6a; }
-        :root.ae-light .ap-nav-btn { color: #6d28d9; border-color: rgba(139,92,246,0.25); }
-        :root.ae-light .ap-back-link { color: #6d28d9!important; }
-        :root.ae-light .ap-ep-info-center { color: #666; }
+        @media (max-width: 1024px) {
+            .ap-content-row {
+                grid-template-columns: 1fr;
+            }
+            .ap-video-wrapper {
+                border-radius: 0;
+            }
+            .ap-episode-section {
+                width: auto;
+                border-left: none;
+                border-top: 1px solid rgba(139,92,246,0.2);
+                border-radius: 0;
+                max-height: none;
+                overflow-y: visible !important;
+            }
+        }
 
         @media (max-width: 640px) {
             .ap-title-bar { padding: 14px 16px; }
             .ap-anime-title { font-size: 18px!important; }
-            .ap-controls-bar { padding: 10px 14px; }
-            .ap-nav-btn { padding: 6px 12px; font-size: 12px; }
             .ap-episode-section { padding: 14px 16px 20px; }
-            .ap-ep-btn { min-width: 44px; height: 36px; font-size: 13px; }
+            .ap-ep-btn { height: 36px; font-size: 13px; }
         }
     `;
 
     // ===================== INIT =====================
-    mountThemeControlToHeader();
-    setTimeout(mountThemeControlToHeader, 120);
-    initThemeSync();
+    mountSettingsButtonToHeader();
+    setTimeout(mountSettingsButtonToHeader, 120);
+    initForcedDarkMode();
     maybeShowApiSetupHint();
 
     if (isHomePage()) {
