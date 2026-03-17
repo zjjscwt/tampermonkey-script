@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime1.me Enhancer
 // @namespace    https://github.com/zjjscwt/tampermonkey-script
-// @version      2.1.0
+// @version      2.1.1
 // @description  UI優化+卡片式封麵展示+ 播放器整合+選集模式+播放記憶
 // @author       Antigravity
 // @match        https://anime1.me/*
@@ -1710,7 +1710,7 @@
             min-width: 0;
             background: rgba(15,12,41,0.68);
             border: 1px solid rgba(139,92,246,0.2);
-            border-radius: 12px;
+            border-radius: 0 0 12px 12px;
             backdrop-filter: blur(12px);
             overflow: hidden;
         }
