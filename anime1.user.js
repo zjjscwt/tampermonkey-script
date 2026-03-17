@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Anime1.me 增強
+// @name         Anime1.me 增強2026
 // @namespace    https://github.com/zjjscwt/tampermonkey-script
 // @version      2.1.1
 // @description  UI優化+卡片式封麵展示+ 播放器整合+選集模式+播放記憶
