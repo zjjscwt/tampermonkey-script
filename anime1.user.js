@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Anime1.me Enhancer
 // @namespace    https://github.com/zjjscwt/tampermonkey-script
-// @version      2.0.0
-// @description  為 Anime1.me 打造現代化UI：首頁卡片式封面展示（TMDB）+ 播放頁單播放器選集模式
+// @version      2.1.0
+// @description  UI優化+卡片式封麵展示+ 播放器整合+選集模式+播放記憶
 // @author       Antigravity
 // @match        https://anime1.me/*
 // @grant        GM_xmlhttpRequest
@@ -1664,15 +1664,16 @@
         // Fetch banner
         if (pageTitle) {
             searchTmdb(pageTitle).then(data => {
-                if (data?.poster) {
-                    playPoster = data.poster;
-                    applyEpisodePoster(mountedVjs, playPoster);
-                }
                 if (data?.banner) {
                     const bar = document.getElementById('ap-title-bar');
                     bar.style.backgroundImage = `linear-gradient(135deg, rgba(15,12,41,0.92), rgba(48,43,99,0.88), rgba(36,36,62,0.92)), url(${data.banner})`;
                     bar.style.backgroundSize = 'cover, cover';
                     bar.style.backgroundPosition = 'center, center';
+                }
+                const heroImage = data?.banner || data?.poster || null;
+                if (heroImage) {
+                    playPoster = heroImage;
+                    applyEpisodePoster(mountedVjs, playPoster);
                 }
             });
         }
