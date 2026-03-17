@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
 // @namespace    https://github.com/zjjscwt/tampermonkey-script
-// @version      2.1.1
+// @version      2.2.0
 // @description  UI優化+卡片式封麵展示+ 播放器整合+選集模式+播放記憶
 // @author       Antigravity
 // @match        https://anime1.me/*
@@ -23,6 +23,8 @@
     const TMDB_API_APPLY_URL = 'https://www.themoviedb.org/settings/api';
     const TMDB_API_STORAGE_KEY = 'tmdb_api_key';
     const TMDB_API_HINT_SHOWN_KEY = 'tmdb_api_hint_shown_v1';
+    const TMDB_TEST_API_IMPORTED_KEY = 'tmdb_test_api_imported_v1';
+    const TMDB_TEST_API_KEY = '8baba8ab6b8bbe247645bcae7df63d0d';
     let TMDB_API_KEY = getStoredTmdbApiKey();
     const TMDB_API_URL = 'https://api.themoviedb.org/3';
     const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
@@ -32,10 +34,20 @@
 
     function getStoredTmdbApiKey() {
         try {
-            return (GM_getValue(TMDB_API_STORAGE_KEY, '') || '').trim();
+            const stored = (GM_getValue(TMDB_API_STORAGE_KEY, '') || '').trim();
+            if (stored) return stored;
+            const imported = !!GM_getValue(TMDB_TEST_API_IMPORTED_KEY, false);
+            if (imported) return '';
+            GM_setValue(TMDB_API_STORAGE_KEY, TMDB_TEST_API_KEY);
+            GM_setValue(TMDB_TEST_API_IMPORTED_KEY, true);
+            return TMDB_TEST_API_KEY;
         } catch {
-            return '';
+            return TMDB_TEST_API_KEY;
         }
+    }
+
+    function isTestTmdbApiKey(key) {
+        return (key || '').trim() === TMDB_TEST_API_KEY;
     }
 
     function setStoredTmdbApiKey(key) {
@@ -73,10 +85,12 @@
                 <div class="ae-modal-field">
                     <label for="ae-tmdb-key-input">API Key (v3 auth)</label>
                     <input id="ae-tmdb-key-input" type="text" placeholder="請貼上 TMDB API Key" value="${current}">
+                    <p id="ae-test-api-warning" class="ae-test-api-warning">现在使用的是测试API，随时可能失效，如有必要请自行申请</p>
                 </div>
                 <div id="ae-modal-status" class="ae-modal-status"></div>
                 <div class="ae-modal-actions">
                     <button type="button" id="ae-clear-tmdb-key" class="ae-modal-btn ae-modal-btn-danger">清除</button>
+                    <button type="button" id="ae-use-test-tmdb-key" class="ae-modal-btn ae-modal-btn-ghost">使用测试API</button>
                     <span class="ae-modal-actions-spacer"></span>
                     <button type="button" id="ae-cancel-tmdb-key" class="ae-modal-btn ae-modal-btn-ghost">取消</button>
                     <button type="button" id="ae-save-tmdb-key" class="ae-modal-btn ae-modal-btn-primary">儲存並重新整理</button>
@@ -90,13 +104,18 @@
         const statusEl = overlay.querySelector('#ae-modal-status');
         const closeBtn = overlay.querySelector('.ae-modal-close');
         const clearBtn = overlay.querySelector('#ae-clear-tmdb-key');
+        const useTestBtn = overlay.querySelector('#ae-use-test-tmdb-key');
         const saveBtn = overlay.querySelector('#ae-save-tmdb-key');
         const cancelBtn = overlay.querySelector('#ae-cancel-tmdb-key');
+        const testApiWarning = overlay.querySelector('#ae-test-api-warning');
         let clearArmed = false;
 
         const setStatus = (msg, type = 'info') => {
             statusEl.textContent = msg || '';
             statusEl.className = `ae-modal-status ${type ? `is-${type}` : ''}`;
+        };
+        const updateTestApiWarning = () => {
+            testApiWarning.style.display = isTestTmdbApiKey(keyInput.value) ? 'block' : 'none';
         };
         const close = () => {
             document.removeEventListener('keydown', onKeydown);
@@ -112,6 +131,7 @@
         });
         closeBtn.addEventListener('click', close);
         cancelBtn.addEventListener('click', close);
+        keyInput.addEventListener('input', updateTestApiWarning);
 
         clearBtn.addEventListener('click', () => {
             if (!current && !keyInput.value.trim()) {
@@ -133,6 +153,16 @@
             setTimeout(() => location.reload(), 500);
         });
 
+        useTestBtn.addEventListener('click', () => {
+            keyInput.value = TMDB_TEST_API_KEY;
+            clearArmed = false;
+            clearBtn.textContent = '清除';
+            updateTestApiWarning();
+            setStatus('已填入测试API，点击「儲存並重新整理」後生效。', 'info');
+            keyInput.focus();
+            keyInput.select();
+        });
+
         saveBtn.addEventListener('click', () => {
             const next = keyInput.value.trim();
             if (!next) {
@@ -145,6 +175,7 @@
             setTimeout(() => location.reload(), 500);
         });
 
+        updateTestApiWarning();
         keyInput.focus();
         keyInput.select();
     }
@@ -669,6 +700,13 @@
         .ae-modal-field input:focus {
             border-color: rgba(167,139,250,0.9);
             box-shadow: 0 0 0 3px rgba(139,92,246,0.2);
+        }
+        .ae-test-api-warning {
+            margin: 8px 0 0;
+            color: #fcd34d;
+            font-size: 12px;
+            line-height: 1.5;
+            display: none;
         }
         .ae-modal-status {
             min-height: 20px;
