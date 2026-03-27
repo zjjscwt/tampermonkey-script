@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
 // @namespace    https://github.com/zjjscwt/tampermonkey-script
-// @version      2.2.0
+// @version      2.3.0
 // @description  UI優化+卡片式封麵展示+ 播放器整合+選集模式+播放記憶
-// @author       Antigravity
+// @author       Ryan,CodeX
 // @match        https://anime1.me/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -230,18 +230,16 @@
         });
     }
 
-    function mountSettingsButtonToHeader() {
-        const headerHost = document.querySelector('#masthead .header-content') || document.querySelector('#masthead');
-        if (!headerHost) return;
-        ensureApiSettingsButton(headerHost);
+    function mountSettingsFloatingButton() {
+        ensureApiSettingsButton(document.body || document.documentElement);
     }
 
     function ensureApiSettingsButton(controlRoot) {
-        if (!controlRoot || controlRoot.querySelector('#ae-tmdb-settings-btn')) return;
+        if (!controlRoot || document.getElementById('ae-tmdb-settings-btn')) return;
 
         const btn = document.createElement('button');
         btn.id = 'ae-tmdb-settings-btn';
-        btn.className = 'ae-settings-btn';
+        btn.className = 'ae-settings-fab';
         btn.type = 'button';
         btn.title = 'TMDB API 設定';
         btn.innerHTML = `
@@ -443,6 +441,20 @@
         /* ===== Base overrides ===== */
         body {
             font-family: 'Noto Sans TC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+            background: #0b0b16 !important;
+        }
+        #page,
+        #content,
+        .site-content,
+        #primary,
+        #main {
+            background: #0b0b16 !important;
+        }
+        #content,
+        .site-content,
+        #primary,
+        #main {
+            min-height: 100vh;
         }
 
         /* Hide ads */
@@ -584,49 +596,46 @@
             display: none !important;
         }
 
-        #masthead #ae-tmdb-settings-btn.ae-settings-btn {
-            position: absolute !important;
-            top: 50% !important;
-            right: 14px !important;
-            transform: translateY(-50%) !important;
+        #ae-tmdb-settings-btn.ae-settings-fab {
+            position: fixed !important;
+            right: 18px !important;
+            bottom: 18px !important;
             z-index: 9999 !important;
-            width: 34px !important;
-            height: 34px !important;
+            width: 42px !important;
+            height: 42px !important;
             border-radius: 999px !important;
             padding: 0 !important;
             display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
             border: none !important;
-            background: transparent !important;
-            color: #9aa8c4 !important;
-            box-shadow: none !important;
-            backdrop-filter: none !important;
+            color: #dbeafe !important;
             transition: all 0.2s ease !important;
             cursor: pointer !important;
-            top: calc(50% + 2px) !important;
-            border: 1px solid rgba(148,163,184,0.45) !important;
-            background: rgba(30,41,59,0.35) !important;
-            box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 3px 10px rgba(2,6,23,0.22) !important;
-            backdrop-filter: blur(6px) !important;
+            border: 1px solid rgba(147,197,253,0.5) !important;
+            background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
+            box-shadow: 0 8px 22px rgba(37,99,235,0.35) !important;
         }
-        #masthead #ae-tmdb-settings-btn.ae-settings-btn > span {
+        body.home #ae-tmdb-settings-btn.ae-settings-fab {
+            bottom: 68px !important;
+        }
+        #ae-tmdb-settings-btn.ae-settings-fab > span {
             display: none !important;
         }
-        #masthead #ae-tmdb-settings-btn.ae-settings-btn .inline-svg {
+        #ae-tmdb-settings-btn.ae-settings-fab .inline-svg {
             width: 17px !important;
             height: 17px !important;
             margin: 0 !important;
         }
-        #masthead #ae-tmdb-settings-btn.ae-settings-btn .inline-svg path[stroke] {
+        #ae-tmdb-settings-btn.ae-settings-fab .inline-svg path[stroke] {
             stroke: currentColor !important;
             fill: none !important;
         }
-        #masthead #ae-tmdb-settings-btn.ae-settings-btn .inline-svg path:not([stroke]) {
+        #ae-tmdb-settings-btn.ae-settings-fab .inline-svg path:not([stroke]) {
             fill: currentColor !important;
         }
-        #masthead #ae-tmdb-settings-btn.ae-settings-btn:hover {
-            color: #c7d2fe !important;
+        #ae-tmdb-settings-btn.ae-settings-fab:hover {
+            filter: brightness(1.08);
         }
 
         .ae-modal-overlay {
@@ -908,12 +917,73 @@
         const statusEl = document.getElementById('ae-infinite-status');
         const sentinelEl = document.getElementById('ae-scroll-sentinel');
         const batchSize = 24;
+        let pageInputEl = null;
         let filteredList = [...animeList];
         let currentFilter = 'all';
         let currentSeason = '';
         let continueMetaByCat = new Map();
         let renderCursor = 0;
         let loadingMore = false;
+
+        function ensurePageJumpBall() {
+            let ball = document.getElementById('ae-page-jump-ball');
+            if (!ball) {
+                ball = document.createElement('div');
+                ball.id = 'ae-page-jump-ball';
+                ball.className = 'ae-page-jump-ball';
+                ball.innerHTML = `
+                    <input id="ae-page-jump-input" class="ae-page-jump-input" type="text" inputmode="numeric" value="1" aria-label="跳转页码">
+                `;
+                document.body.appendChild(ball);
+            }
+            pageInputEl = ball.querySelector('#ae-page-jump-input');
+        }
+
+        function getTotalPages() {
+            return Math.max(1, Math.ceil(filteredList.length / batchSize));
+        }
+
+        function getCurrentPageByScroll() {
+            if (!grid) return 1;
+            const cards = grid.querySelectorAll('.ae-card');
+            if (!cards.length) return 1;
+            const pivot = 90;
+            for (const card of cards) {
+                const rect = card.getBoundingClientRect();
+                if (rect.bottom > pivot) {
+                    const idx = parseInt(card.dataset.index || '0', 10);
+                    if (Number.isFinite(idx)) return Math.floor(idx / batchSize) + 1;
+                    break;
+                }
+            }
+            return Math.max(1, Math.ceil(renderCursor / batchSize));
+        }
+
+        function syncPageJumpBall(force = false) {
+            if (!pageInputEl) return;
+            const totalPages = getTotalPages();
+            if (!force && document.activeElement === pageInputEl) return;
+            pageInputEl.value = String(Math.min(getCurrentPageByScroll(), totalPages));
+        }
+
+        function jumpToPage(pageNumber) {
+            const totalPages = getTotalPages();
+            const targetPage = Math.min(totalPages, Math.max(1, pageNumber));
+            while (renderCursor < targetPage * batchSize) {
+                renderNextBatch();
+                if (loadingMore) break;
+            }
+            const startIndex = (targetPage - 1) * batchSize;
+            requestAnimationFrame(() => {
+                const card = grid.querySelector(`.ae-card[data-index="${startIndex}"]`);
+                if (card) {
+                    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                    grid.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+                syncPageJumpBall(true);
+            });
+        }
 
         function filterAndRender() {
             const watchMap = getWatchProgressMap();
@@ -942,6 +1012,7 @@
             grid.innerHTML = '';
             updateStatus();
             renderNextBatch();
+            syncPageJumpBall(true);
         }
 
         function updateStatus() {
@@ -986,6 +1057,7 @@
             renderCursor += batchItems.length;
             loadingMore = false;
             updateStatus();
+            syncPageJumpBall();
         }
 
         function createCard(anime, index) {
@@ -1146,6 +1218,23 @@
             }, 100));
         }
 
+        ensurePageJumpBall();
+        if (pageInputEl) {
+            pageInputEl.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                const raw = (pageInputEl.value || '').trim();
+                const page = parseInt(raw, 10);
+                if (!Number.isFinite(page)) {
+                    syncPageJumpBall(true);
+                    return;
+                }
+                jumpToPage(page);
+            });
+            pageInputEl.addEventListener('blur', () => syncPageJumpBall(true));
+        }
+        window.addEventListener('scroll', debounce(() => syncPageJumpBall(), 80));
+
         filterAndRender();
     }
 
@@ -1170,6 +1259,80 @@
 
     const HOMEPAGE_CSS = `
         .entry-header { display: none !important; }
+
+        .ae-page-jump-ball {
+            position: fixed;
+            right: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 9999;
+            width: 44px;
+            height: 44px;
+            padding: 0;
+            border-radius: 999px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle at 28% 22%, rgba(196,181,253,0.35), rgba(124,58,237,0.42) 46%, rgba(15,23,42,0.84) 100%);
+            border: 1px solid rgba(196,181,253,0.42);
+            box-shadow: 0 10px 24px rgba(76,29,149,0.36), inset 0 1px 0 rgba(255,255,255,0.16);
+            backdrop-filter: blur(10px) saturate(1.1);
+            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+        .ae-page-jump-ball:hover {
+            transform: translateY(-50%) scale(1.04);
+            border-color: rgba(216,180,254,0.7);
+            box-shadow: 0 14px 30px rgba(109,40,217,0.45), inset 0 1px 0 rgba(255,255,255,0.24);
+        }
+        .ae-page-jump-ball:focus-within {
+            border-color: rgba(233,213,255,0.92);
+            box-shadow: 0 0 0 3px rgba(139,92,246,0.24), 0 14px 30px rgba(109,40,217,0.45);
+        }
+        .ae-page-jump-input {
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            height: 100% !important;
+            line-height: 44px !important;
+            box-sizing: border-box !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border: none !important;
+            border-radius: 999px !important;
+            background: transparent !important;
+            color: #f8fafc !important;
+            text-align: center !important;
+            font-size: 14px !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.2px !important;
+            text-shadow: 0 1px 2px rgba(15,23,42,0.75);
+            outline: none !important;
+            appearance: textfield;
+            -moz-appearance: textfield;
+            flex: 0 0 auto !important;
+        }
+        .ae-page-jump-input::-webkit-outer-spin-button,
+        .ae-page-jump-input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        @media (max-width: 640px) {
+            .ae-page-jump-ball {
+                right: 10px;
+                top: auto;
+                bottom: 120px;
+                transform: none;
+                width: 40px;
+                height: 40px;
+            }
+            .ae-page-jump-ball:hover {
+                transform: scale(1.03);
+            }
+            .ae-page-jump-input {
+                line-height: 40px !important;
+                font-size: 13px !important;
+            }
+        }
 
         /* Loading */
         .ae-loading {
@@ -1448,6 +1611,33 @@
         const main = document.getElementById('main');
         const primaryDiv = document.getElementById('primary');
 
+        // Move play title/info into site header and hide default site title on play page
+        const headerHost = document.querySelector('#masthead .header-content') || document.querySelector('#masthead');
+        if (headerHost) {
+            let playHeader = headerHost.querySelector('#ap-play-header-panel');
+            if (!playHeader) {
+                playHeader = document.createElement('div');
+                playHeader.id = 'ap-play-header-panel';
+                playHeader.innerHTML = `
+                    <div class="ap-header-main">
+                        <h1 class="ap-anime-title">${pageTitle}</h1>
+                        <div class="ap-now-playing">
+                            <span class="ap-now-label">正在播放</span>
+                            <span class="ap-now-ep" id="ap-current-ep-label"></span>
+                        </div>
+                    </div>
+                    <a class="ap-back-link" href="https://anime1.me/">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M15 18l-6-6 6-6"/></svg>
+                        返回列表
+                    </a>
+                `;
+                headerHost.appendChild(playHeader);
+            } else {
+                const titleNode = playHeader.querySelector('.ap-anime-title');
+                if (titleNode) titleNode.textContent = pageTitle;
+            }
+        }
+
         // Hide original content
         articles.forEach(a => a.style.display = 'none');
         document.querySelectorAll('#main > .pagination, #main > nav').forEach(el => el.style.display = 'none');
@@ -1457,25 +1647,12 @@
         if (secondary) secondary.style.display = 'none';
         if (primaryDiv) primaryDiv.style.cssText = 'width:100%!important;max-width:1100px!important;margin:0 auto!important;float:none!important;';
         const siteContent = document.querySelector('.site-content');
-        if (siteContent) siteContent.style.cssText = 'max-width:1200px!important;margin:0 auto!important;padding:0 20px!important;';
+        if (siteContent) siteContent.style.cssText = 'max-width:1200px!important;margin:0 auto!important;padding:0!important;';
 
         // Build player UI
         const section = document.createElement('div');
         section.className = 'ap-player-section';
         section.innerHTML = `
-            <div class="ap-title-bar" id="ap-title-bar">
-                <div class="ap-anime-info">
-                    <h1 class="ap-anime-title">${pageTitle}</h1>
-                    <div class="ap-now-playing">
-                        <span class="ap-now-label">正在播放</span>
-                        <span class="ap-now-ep" id="ap-current-ep-label"></span>
-                    </div>
-                </div>
-                <a class="ap-back-link" href="https://anime1.me/">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M15 18l-6-6 6-6"/></svg>
-                    返回列表
-                </a>
-            </div>
             <div class="ap-main-layout">
                 <div class="ap-player-column">
                     <div class="ap-content-row">
@@ -1519,6 +1696,9 @@
         let saveHandlers = null;
         let lastProgressSaveAt = 0;
         let lastProgressSec = -1;
+        let webFullscreenActive = false;
+        let webFullscreenShortcutBound = false;
+        const WEB_FULLSCREEN_CLASS = 'ae-web-fullscreen';
         const storedProgress = getWatchProgressForAnime({ catId: playCatId, name: pageTitle });
         let pendingResume = (storedProgress && Number.isFinite(storedProgress.positionSec))
             ? {
@@ -1613,6 +1793,79 @@
             }
         }
 
+        function syncWebFullscreenButtons() {
+            document.querySelectorAll('.ae-webfs-btn').forEach((btn) => {
+                const active = !!webFullscreenActive;
+                btn.classList.toggle('is-active', active);
+                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+                btn.title = active ? '退出网页全屏 (W)' : '网页全屏 (W)';
+                const textNode = btn.querySelector('.vjs-control-text');
+                if (textNode) textNode.textContent = active ? '退出网页全屏' : '网页全屏';
+                const iconPath = btn.querySelector('.ae-webfs-icon path');
+                if (iconPath) {
+                    iconPath.setAttribute('d', active
+                        ? 'M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5'
+                        : 'M9 3H3v6M15 3h6v6M9 21H3v-6M21 15v6h-6');
+                }
+            });
+        }
+
+        function setWebFullscreen(active) {
+            webFullscreenActive = !!active;
+            document.documentElement.classList.toggle(WEB_FULLSCREEN_CLASS, webFullscreenActive);
+            document.body.classList.toggle(WEB_FULLSCREEN_CLASS, webFullscreenActive);
+            syncWebFullscreenButtons();
+        }
+
+        function ensureWebFullscreenControl(container) {
+            const controlBar = container?.querySelector('.vjs-control-bar');
+            if (!controlBar) return;
+            if (!controlBar.querySelector('.ae-webfs-btn')) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'vjs-webfs-control vjs-control vjs-button ae-webfs-btn';
+                btn.innerHTML = `
+                    <svg class="ae-webfs-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M9 3H3v6M15 3h6v6M9 21H3v-6M21 15v6h-6"></path>
+                        <circle class="ae-webfs-dot" cx="12" cy="12" r="1.45"></circle>
+                    </svg>
+                    <span class="vjs-control-text">网页全屏</span>
+                `;
+                btn.addEventListener('click', () => setWebFullscreen(!webFullscreenActive));
+                const nativeFullscreen = controlBar.querySelector('.vjs-fullscreen-control');
+                if (nativeFullscreen && nativeFullscreen.parentElement === controlBar) {
+                    controlBar.insertBefore(btn, nativeFullscreen);
+                } else {
+                    controlBar.appendChild(btn);
+                }
+            }
+            syncWebFullscreenButtons();
+        }
+
+        function bindWebFullscreenShortcut() {
+            if (webFullscreenShortcutBound) return;
+            const onKeydown = (e) => {
+                const target = e.target;
+                const isEditable = !!(target && (
+                    target.tagName === 'INPUT' ||
+                    target.tagName === 'TEXTAREA' ||
+                    target.isContentEditable
+                ));
+                if (isEditable) return;
+                if ((e.key === 'w' || e.key === 'W') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    e.preventDefault();
+                    setWebFullscreen(!webFullscreenActive);
+                    return;
+                }
+                if (e.key === 'Escape' && webFullscreenActive) {
+                    e.preventDefault();
+                    setWebFullscreen(false);
+                }
+            };
+            document.addEventListener('keydown', onKeydown);
+            webFullscreenShortcutBound = true;
+        }
+
         function switchEp(index) {
             if (index < 0 || index >= episodes.length) return;
             currentIdx = index;
@@ -1639,6 +1892,7 @@
                 wrapper.appendChild(ep.vjsContainer);
                 mountedVjs = ep.vjsContainer;
                 applyEpisodePoster(ep.vjsContainer, playPoster);
+                ensureWebFullscreenControl(ep.vjsContainer);
                 const video = ep.vjsContainer.querySelector('video');
                 if (video) {
                     bindVideoProgress(video);
@@ -1691,6 +1945,7 @@
             }
         }
         switchEp(startIdx);
+        bindWebFullscreenShortcut();
         requestAnimationFrame(() => {
             setTimeout(centerPlayerOnOpen, 60);
         });
@@ -1702,12 +1957,6 @@
         // Fetch banner
         if (pageTitle) {
             searchTmdb(pageTitle).then(data => {
-                if (data?.banner) {
-                    const bar = document.getElementById('ap-title-bar');
-                    bar.style.backgroundImage = `linear-gradient(135deg, rgba(15,12,41,0.92), rgba(48,43,99,0.88), rgba(36,36,62,0.92)), url(${data.banner})`;
-                    bar.style.backgroundSize = 'cover, cover';
-                    bar.style.backgroundPosition = 'center, center';
-                }
                 const heroImage = data?.banner || data?.poster || null;
                 if (heroImage) {
                     playPoster = heroImage;
@@ -1718,6 +1967,56 @@
     }
 
     const PLAYPAGE_CSS = `
+        html.ae-web-fullscreen,
+        body.ae-web-fullscreen {
+            overflow: hidden !important;
+        }
+        body.ae-web-fullscreen #masthead,
+        body.ae-web-fullscreen #colophon {
+            display: none !important;
+        }
+        body.ae-web-fullscreen .ap-player-section {
+            position: fixed !important;
+            inset: 0 !important;
+            z-index: 2147483000 !important;
+            margin: 0 !important;
+            width: 100vw !important;
+            max-width: none !important;
+            background: #000 !important;
+        }
+        body.ae-web-fullscreen .ap-main-layout,
+        body.ae-web-fullscreen .ap-player-column,
+        body.ae-web-fullscreen .ap-content-row,
+        body.ae-web-fullscreen .ap-left-stack {
+            height: 100% !important;
+            min-height: 0 !important;
+            background: #000 !important;
+            border: none !important;
+            border-radius: 0 !important;
+        }
+        body.ae-web-fullscreen .ap-episode-section {
+            display: none !important;
+        }
+        body.ae-web-fullscreen #ap-video-wrapper {
+            position: relative !important;
+            width: 100% !important;
+            height: 100vh !important;
+            background: #000 !important;
+        }
+        body.ae-web-fullscreen #ap-video-wrapper::before {
+            display: none !important;
+        }
+        body.ae-web-fullscreen #ap-video-wrapper .vjscontainer,
+        body.ae-web-fullscreen #ap-video-wrapper .video-js,
+        body.ae-web-fullscreen #ap-video-wrapper .video-js .vjs-tech,
+        body.ae-web-fullscreen #ap-video-wrapper .video-js video {
+            position: absolute !important;
+            inset: 0 !important;
+            width: 100% !important;
+            height: 100% !important;
+            background: #000 !important;
+        }
+
         .page-header { display: none !important; }
 
         body.archive.category,
@@ -1744,6 +2043,36 @@
         .ap-main-layout {
             display: block;
         }
+        body.archive.category #masthead .site-title,
+        body.archive.category #masthead #site-branding {
+            display: none !important;
+        }
+        body.archive.category #masthead .header-content {
+            padding: 10px 16px !important;
+            min-height: auto !important;
+            display: flex !important;
+            align-items: center !important;
+        }
+        #ap-play-header-panel {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            width: 100%;
+            padding: 0;
+            border: none;
+            border-radius: 0;
+            background: transparent;
+            box-shadow: none;
+            min-height: 38px;
+            padding-right: 0;
+        }
+        .ap-header-main {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
         .ap-player-column {
             min-width: 0;
             background: rgba(15,12,41,0.68);
@@ -1753,9 +2082,8 @@
             overflow: hidden;
         }
         .ap-content-row {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            align-items: stretch;
+            display: flex;
+            flex-direction: column;
             min-height: 100%;
         }
         .ap-left-stack {
@@ -1772,18 +2100,14 @@
             max-height: none !important;
         }
 
-        .ap-title-bar {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 20px 24px;
-            background: linear-gradient(135deg, rgba(15,12,41,0.95), rgba(48,43,99,0.9), rgba(36,36,62,0.95));
-            border-radius: 16px 16px 0 0;
-            border: 1px solid rgba(139,92,246,0.2); border-bottom: none;
-            flex-wrap: wrap; gap: 12px;
-        }
         .ap-anime-title {
-            font-size: 22px!important; font-weight: 700!important; margin: 0 0 6px!important;
+            font-size: 22px!important; font-weight: 700!important; margin: 0!important;
             color: #e9ddff !important;
             line-height: 1.3!important;
+            max-width: 100%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         @supports (-webkit-background-clip: text) {
             .ap-anime-title {
@@ -1795,16 +2119,18 @@
         .ap-now-playing { display: flex; align-items: center; gap: 8px; }
         .ap-now-label {
             font-size: 12px; padding: 3px 10px;
-            background: rgba(139,92,246,0.35); border-radius: 4px; color: #c4b5fd; font-weight: 500;
+            background: rgba(139,92,246,0.2); border-radius: 999px; color: #ddd6fe; font-weight: 500;
+            border: 1px solid rgba(167,139,250,0.35);
         }
         .ap-now-ep { font-size: 14px; color: rgba(255,255,255,0.75); }
         .ap-back-link {
-            display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 10px;
-            background: rgba(139,92,246,0.15); border: 1px solid rgba(139,92,246,0.3);
-            color: #c4b5fd!important; text-decoration: none!important; font-size: 13px;
+            display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border-radius: 999px;
+            height: 34px; box-sizing: border-box;
+            background: rgba(15,23,42,0.38); border: 1px solid rgba(148,163,184,0.36);
+            color: #e2e8f0!important; text-decoration: none!important; font-size: 13px;
             transition: all 0.25s ease; white-space: nowrap;
         }
-        .ap-back-link:hover { background: rgba(139,92,246,0.3); transform: translateX(-2px); }
+        .ap-back-link:hover { background: rgba(51,65,85,0.65); border-color: rgba(196,181,253,0.55); }
 
         .ap-video-wrapper {
             background: #000;
@@ -1846,13 +2172,52 @@
         .ap-video-wrapper .video-js .vjs-control-bar {
             z-index: 30 !important;
         }
+        .vjs-webfs-control {
+            width: 3em !important;
+            min-width: 3em !important;
+            padding: 0 !important;
+        }
+        .vjs-webfs-control .vjs-control-text {
+            position: absolute !important;
+            width: 1px !important;
+            height: 1px !important;
+            padding: 0 !important;
+            margin: -1px !important;
+            overflow: hidden !important;
+            clip: rect(0,0,0,0) !important;
+            white-space: nowrap !important;
+            border: 0 !important;
+        }
+        .vjs-webfs-control .ae-webfs-icon {
+            width: 15px;
+            height: 15px;
+            display: block;
+            margin: 0 auto;
+            color: rgba(255,255,255,0.92);
+            pointer-events: none;
+            transition: color 0.2s ease;
+        }
+        .vjs-webfs-control .ae-webfs-icon path {
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+        .vjs-webfs-control .ae-webfs-icon .ae-webfs-dot {
+            fill: currentColor;
+            opacity: 0.9;
+        }
+        .ae-webfs-btn.is-active .ae-webfs-icon {
+            color: #c4b5fd;
+        }
 
         .ap-episode-section {
-            width: 272px;
+            width: 100%;
             padding: 20px 24px 28px;
             background: rgba(15,12,41,0.6);
-            border-left: 1px solid rgba(139,92,246,0.2);
-            border-top: none;
+            border-left: none;
+            border-top: 1px solid rgba(139,92,246,0.2);
             border-right: none;
             border-bottom: none;
             border-radius: 0;
@@ -1860,8 +2225,8 @@
             overflow: visible !important;
             z-index: auto !important;
             margin-top: 0 !important;
-            max-height: calc(100vh - 220px);
-            overflow-y: auto !important;
+            max-height: none;
+            overflow-y: visible !important;
         }
         .ap-ep-header {
             display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;
@@ -1875,7 +2240,7 @@
 
         .ap-ep-grid {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
             gap: 8px;
         }
         .ap-ep-btn {
@@ -1895,33 +2260,63 @@
         }
 
         @media (max-width: 1024px) {
-            .ap-content-row {
-                grid-template-columns: 1fr;
-            }
             .ap-video-wrapper {
                 border-radius: 0;
             }
             .ap-episode-section {
-                width: auto;
-                border-left: none;
-                border-top: 1px solid rgba(139,92,246,0.2);
                 border-radius: 0;
-                max-height: none;
-                overflow-y: visible !important;
+            }
+            .ap-ep-grid {
+                grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
             }
         }
 
         @media (max-width: 640px) {
-            .ap-title-bar { padding: 14px 16px; }
+            body.archive.category,
+            body.archive.category #page,
+            body.archive.category #content,
+            body.archive.category .site-content,
+            body.archive.category #primary,
+            body.archive.category #main,
+            body.archive.category .ap-player-section,
+            body.archive.category .ap-main-layout,
+            body.archive.category .ap-player-column {
+                width: 100% !important;
+                max-width: 100% !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                padding-left: 0 !important;
+                padding-right: 0 !important;
+            }
+            body.archive.category .site-content {
+                padding-left: 0 !important;
+                padding-right: 0 !important;
+            }
+            .ap-title-bar {
+                display: none !important;
+            }
+            .ap-player-column {
+                border-left: none !important;
+                border-right: none !important;
+                border-radius: 0 !important;
+            }
+            #ap-play-header-panel {
+                border-radius: 0 !important;
+                padding: 0;
+                padding-right: 0;
+            }
             .ap-anime-title { font-size: 18px!important; }
             .ap-episode-section { padding: 14px 16px 20px; }
+            .ap-ep-grid {
+                grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+            }
             .ap-ep-btn { height: 36px; font-size: 13px; }
         }
     `;
 
     // ===================== INIT =====================
-    mountSettingsButtonToHeader();
-    setTimeout(mountSettingsButtonToHeader, 120);
+    mountSettingsFloatingButton();
+    setTimeout(mountSettingsFloatingButton, 120);
     initForcedDarkMode();
     maybeShowApiSetupHint();
 
