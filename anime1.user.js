@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      2.5.1
+// @version      3.0.0
 // @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
@@ -12,12 +12,42 @@
 // @connect      anime1.me
 // @run-at       document-idle
 // @license      MIT
-// @namespace https://github.com/zjjscwt/tampermonkey-script
 // ==/UserScript==
- 
+
 (function () {
     'use strict';
- 
+
+    // ===================== CORE HELPERS =====================
+    const Store = {
+        get: (key, def = null) => { try { const v = GM_getValue(key); const p = v ? (typeof v === 'string' ? JSON.parse(v) : v) : def; return (p && typeof p === 'object') ? p : def; } catch { return def; } },
+        set: (key, val) => { try { GM_setValue(key, typeof val === 'string' ? val : JSON.stringify(val)); } catch { } }
+    };
+    const requestAsync = (url, options = {}) => new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+            method: options.method || 'GET', url, responseType: options.responseType, headers: options.headers, onload: (r) => {
+                if (options.json) { try { resolve(JSON.parse(r.responseText)); } catch { resolve(null); } }
+                else resolve(r);
+            }, onerror: () => options.json ? resolve(null) : reject()
+        });
+    });
+    const createBaseModal = ({ id, width, title, content, onActionHTML, onActionClick, onInit }) => {
+        const existing = document.getElementById(id); if (existing) existing.remove();
+        const overlay = document.createElement('div'); overlay.id = id; overlay.className = 'ae-modal-overlay';
+        overlay.innerHTML = `<div class="ae-modal-panel ae-fav-modal-panel" style="max-width:${width || 420}px" role="dialog" aria-modal="true">
+            <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
+            <h2 class="ae-modal-title ae-fav-modal-title">${title}</h2>
+            ${content}
+            ${onActionHTML ? `<div class="ae-modal-footer" style="display:flex; justify-content:space-between; margin-top:16px;">${onActionHTML}</div>` : ''}
+        </div>`;
+        document.body.appendChild(overlay);
+        const close = () => { overlay.remove(); };
+        overlay.querySelector('.ae-modal-close').addEventListener('click', close);
+        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+        const onKey = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
+        document.addEventListener('keydown', onKey);
+        if (onActionClick) onActionClick(overlay, close);
+        if (onInit) onInit(overlay, close);
+    };
     // ===================== CONFIG =====================
     const CACHE_EXPIRY = 7 * 24 * 60 * 60 * 1000; // 7 days
     const TMDB_API_APPLY_URL = 'https://www.themoviedb.org/settings/api';
@@ -32,7 +62,7 @@
     const API_RATE_INTERVAL = 300; // ms between requests
     const WATCH_PROGRESS_STORAGE_KEY = 'ae_watch_progress_v1';
     const FAVORITES_STORAGE_KEY = 'ae_favorites_v1';
- 
+
     function getStoredTmdbApiKey() {
         try {
             const stored = (GM_getValue(TMDB_API_STORAGE_KEY, '') || '').trim();
@@ -46,16 +76,16 @@
             return TMDB_TEST_API_KEY;
         }
     }
- 
+
     function isTestTmdbApiKey(key) {
         return (key || '').trim() === TMDB_TEST_API_KEY;
     }
- 
+
     function setStoredTmdbApiKey(key) {
         TMDB_API_KEY = (key || '').trim();
         try { GM_setValue(TMDB_API_STORAGE_KEY, TMDB_API_KEY); } catch { /* ignore */ }
     }
- 
+
     function maybeShowApiSetupHint() {
         if (TMDB_API_KEY) return;
         let shown = false;
@@ -64,11 +94,11 @@
         try { GM_setValue(TMDB_API_HINT_SHOWN_KEY, true); } catch { /* ignore */ }
         setTimeout(() => openTmdbApiSettingsDialog({ firstTime: true }), 120);
     }
- 
+
     function openTmdbApiSettingsDialog(options = {}) {
         const existing = document.getElementById('ae-tmdb-modal');
         if (existing) return;
- 
+
         const current = getStoredTmdbApiKey();
         const overlay = document.createElement('div');
         overlay.id = 'ae-tmdb-modal';
@@ -98,9 +128,9 @@
                 </div>
             </div>
         `;
- 
+
         document.body.appendChild(overlay);
- 
+
         const keyInput = overlay.querySelector('#ae-tmdb-key-input');
         const statusEl = overlay.querySelector('#ae-modal-status');
         const closeBtn = overlay.querySelector('.ae-modal-close');
@@ -110,7 +140,7 @@
         const cancelBtn = overlay.querySelector('#ae-cancel-tmdb-key');
         const testApiWarning = overlay.querySelector('#ae-test-api-warning');
         let clearArmed = false;
- 
+
         const setStatus = (msg, type = 'info') => {
             statusEl.textContent = msg || '';
             statusEl.className = `ae-modal-status ${type ? `is-${type}` : ''}`;
@@ -126,14 +156,14 @@
             if (e.key === 'Escape') close();
         };
         document.addEventListener('keydown', onKeydown);
- 
+
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) close();
         });
         closeBtn.addEventListener('click', close);
         cancelBtn.addEventListener('click', close);
         keyInput.addEventListener('input', updateTestApiWarning);
- 
+
         clearBtn.addEventListener('click', () => {
             if (!current && !keyInput.value.trim()) {
                 setStatus('目前沒有可清除的 API Key。', 'info');
@@ -153,7 +183,7 @@
             setStatus('API Key 已清除，頁面即將重新整理。', 'success');
             setTimeout(() => location.reload(), 500);
         });
- 
+
         useTestBtn.addEventListener('click', () => {
             keyInput.value = TMDB_TEST_API_KEY;
             clearArmed = false;
@@ -163,7 +193,7 @@
             keyInput.focus();
             keyInput.select();
         });
- 
+
         saveBtn.addEventListener('click', () => {
             const next = keyInput.value.trim();
             if (!next) {
@@ -175,35 +205,35 @@
             setStatus('API Key 已儲存，頁面即將重新整理。', 'success');
             setTimeout(() => location.reload(), 500);
         });
- 
+
         updateTestApiWarning();
         keyInput.focus();
         keyInput.select();
     }
- 
+
     // ===================== FONT =====================
     const fontLink = document.createElement('link');
     fontLink.rel = 'stylesheet';
     fontLink.href = 'https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap';
     document.head.appendChild(fontLink);
- 
+
     // ===================== UTILITIES =====================
     function injectCSS(css) {
         const style = document.createElement('style');
         style.textContent = css;
         document.head.appendChild(style);
     }
- 
+
     function forceDarkMode() {
         const root = document.documentElement;
         root.classList.add('ae-dark');
         root.classList.remove('ae-light');
- 
+
         try {
             localStorage.setItem('auto_darkmode', '0');
             localStorage.setItem('darkmode', '1');
         } catch { /* ignore */ }
- 
+
         let darkCss = document.getElementById('darkmode-css');
         if (!darkCss) {
             darkCss = document.createElement('link');
@@ -215,10 +245,10 @@
         }
         darkCss.disabled = false;
     }
- 
+
     function initForcedDarkMode() {
         forceDarkMode();
- 
+
         // Site scripts may mutate dark-mode stylesheet state after load; force it back.
         const mo = new MutationObserver(() => {
             forceDarkMode();
@@ -230,40 +260,40 @@
             attributeFilter: ['id', 'disabled', 'media', 'rel', 'href']
         });
     }
- 
+
     function mountSettingsFloatingButton() {
         const root = document.body || document.documentElement;
         ensureApiSettingsButton(root);
         ensureCustomScrollTopButton();
     }
- 
+
     function ensureCustomScrollTopButton() {
         if (document.getElementById('ae-scroll-top-btn-cloned')) return;
- 
+
         const themeScroller = document.querySelector('.scroll-top');
         if (!themeScroller) return;
- 
+
         const clone = themeScroller.cloneNode(true);
         clone.id = 'ae-scroll-top-btn-cloned';
         clone.className = 'ae-settings-fab';
- 
+
         // Hide original permanently
         themeScroller.style.setProperty('display', 'none', 'important');
         themeScroller.style.setProperty('opacity', '0', 'important');
         themeScroller.style.setProperty('pointer-events', 'none', 'important');
- 
+
         themeScroller.parentNode.insertBefore(clone, themeScroller.nextSibling);
- 
+
         clone.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
             window.scrollTo({ top: 0, behavior: 'smooth' });
         });
     }
- 
+
     function ensureApiSettingsButton(controlRoot) {
         if (!controlRoot || document.getElementById('ae-tmdb-settings-btn')) return;
- 
+
         const btn = document.createElement('button');
         btn.id = 'ae-tmdb-settings-btn';
         btn.className = 'ae-settings-fab';
@@ -280,14 +310,14 @@
             e.stopPropagation();
             openTmdbApiSettingsDialog();
         });
- 
+
         controlRoot.appendChild(btn);
     }
- 
+
     function getCacheKey(name) {
         return 'tmdb_v4_' + name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').substring(0, 80);
     }
- 
+
     function getCachedData(name) {
         try {
             const raw = GM_getValue(getCacheKey(name), null);
@@ -297,17 +327,17 @@
             return data.value;
         } catch { return null; }
     }
- 
+
     function setCachedData(name, value) {
         try {
             GM_setValue(getCacheKey(name), JSON.stringify({ timestamp: Date.now(), value }));
         } catch { /* quota exceeded, ignore */ }
     }
- 
+
     function normalizeAnimeName(name) {
         return String(name || '').trim().toLowerCase();
     }
- 
+
     function getWatchProgressMap() {
         try {
             const raw = GM_getValue(WATCH_PROGRESS_STORAGE_KEY, '{}');
@@ -317,20 +347,20 @@
             return {};
         }
     }
- 
+
     function setWatchProgressMap(progressMap) {
         try {
             GM_setValue(WATCH_PROGRESS_STORAGE_KEY, JSON.stringify(progressMap || {}));
         } catch { /* ignore */ }
     }
- 
+
     function getWatchProgressForAnime(anime, progressMap = null) {
         const map = progressMap || getWatchProgressMap();
         const catKey = anime?.catId ? `cat:${anime.catId}` : '';
         const nameKey = anime?.name ? `name:${normalizeAnimeName(anime.name)}` : '';
         return (catKey && map[catKey]) || (nameKey && map[nameKey]) || null;
     }
- 
+
     function saveWatchProgress({ catId, animeName, epNum, epTitle, postUrl, positionSec, durationSec }) {
         if (!animeName) return;
         const map = getWatchProgressMap();
@@ -359,14 +389,14 @@
         if (record.catId) map[`cat:${record.catId}`] = record;
         setWatchProgressMap(map);
     }
- 
+
     function deleteWatchProgressForAnime({ catId, animeName }) {
         const map = getWatchProgressMap();
         if (Number.isFinite(catId) && catId > 0) delete map[`cat:${catId}`];
         if (animeName) delete map[`name:${normalizeAnimeName(animeName)}`];
         setWatchProgressMap(map);
     }
- 
+
     // ===================== FAVORITES =====================
     function getFavoritesData() {
         try {
@@ -380,28 +410,28 @@
             return parsed;
         } catch { return initFavoritesData(); }
     }
- 
+
     function initFavoritesData() {
         const data = { categories: [{ id: 'default', name: '默認分類', isDefault: true }], items: {} };
         setFavoritesData(data);
         return data;
     }
- 
+
     function setFavoritesData(data) {
         try { GM_setValue(FAVORITES_STORAGE_KEY, JSON.stringify(data)); } catch { /* ignore */ }
     }
- 
+
     function isAnimeFavorited(catId) {
         if (!catId) return false;
         const data = getFavoritesData();
         return !!(data.items[`cat:${catId}`] && data.items[`cat:${catId}`].length > 0);
     }
- 
+
     function getAnimeFavoriteCategories(catId) {
         if (!catId) return [];
         return getFavoritesData().items[`cat:${catId}`] || [];
     }
- 
+
     function toggleAnimeInCategory(catId, animeName, categoryId) {
         const data = getFavoritesData();
         const key = `cat:${catId}`;
@@ -412,7 +442,7 @@
         if (data.items[key].length === 0) delete data.items[key];
         setFavoritesData(data);
     }
- 
+
     function addFavoriteCategory(name) {
         const data = getFavoritesData();
         const id = 'fav_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
@@ -420,7 +450,7 @@
         setFavoritesData(data);
         return id;
     }
- 
+
     function deleteFavoriteCategory(categoryId) {
         if (categoryId === 'default') return false;
         const data = getFavoritesData();
@@ -432,7 +462,7 @@
         setFavoritesData(data);
         return true;
     }
- 
+
     function renameFavoriteCategory(categoryId, newName) {
         if (categoryId === 'default') return false;
         const data = getFavoritesData();
@@ -440,14 +470,14 @@
         if (cat) { cat.name = newName; setFavoritesData(data); return true; }
         return false;
     }
- 
+
     function deleteFavoriteAnime(catId) {
         if (!catId) return;
         const data = getFavoritesData();
         delete data.items[`cat:${catId}`];
         setFavoritesData(data);
     }
- 
+
     function moveAnimeToCategory(catId, fromCategoryId, toCategoryId) {
         const data = getFavoritesData();
         const key = `cat:${catId}`;
@@ -457,7 +487,7 @@
         if (data.items[key].length === 0) delete data.items[key];
         setFavoritesData(data);
     }
- 
+
     function getCurrentCategoryId() {
         const qsCat = parseInt(new URLSearchParams(location.search).get('cat') || '', 10);
         if (Number.isFinite(qsCat) && qsCat > 0) return qsCat;
@@ -466,16 +496,16 @@
         const classCat = parseInt(bodyCatClass.replace('category-', ''), 10);
         return (Number.isFinite(classCat) && classCat > 0) ? classCat : null;
     }
- 
+
     // TMDB request queue for rate limiting
     let apiQueue = [];
     let apiProcessing = false;
- 
+
     function processApiQueue() {
         if (apiProcessing || apiQueue.length === 0) return;
         apiProcessing = true;
         const { url, resolve } = apiQueue.shift();
- 
+
         GM_xmlhttpRequest({
             method: 'GET',
             url: url,
@@ -493,7 +523,7 @@
             }
         });
     }
- 
+
     function tmdbRequest(endpoint, params = {}) {
         return new Promise(resolve => {
             if (!TMDB_API_KEY) {
@@ -512,15 +542,15 @@
             processApiQueue();
         });
     }
- 
+
     async function searchTmdb(animeName) {
         if (!TMDB_API_KEY) {
-            return { poster: null, banner: null, score: null, genres: [], title: animeName };
+            return { poster: null, banner: null, score: null, title: animeName };
         }
- 
+
         const cached = getCachedData(animeName);
         if (cached !== null) return cached;
- 
+
         // Clean name for search
         const cleanName = animeName
             .replace(/第[一二三四五六七八九十百\d]+季/g, '')
@@ -529,9 +559,9 @@
             .replace(/Part\s*\d+/gi, '')
             .replace(/\s+/g, ' ')
             .trim();
- 
+
         const data = await tmdbRequest('/search/tv', { query: cleanName });
- 
+
         if (data && data.results && data.results.length > 0) {
             // Prefer entries with posters; fallback to the first result.
             const media = data.results.find(item => item && item.poster_path) || data.results[0];
@@ -548,484 +578,145 @@
             return result;
         } else {
             // Cache miss result too to avoid re-querying
-            const empty = { poster: null, banner: null, score: null, genres: [], title: animeName };
+            const empty = { poster: null, banner: null, score: null, title: animeName };
             setCachedData(animeName, empty);
             return empty;
         }
     }
- 
+
     // ===================== GLOBAL STYLES =====================
     injectCSS(`
-        /* ===== Base overrides ===== */
-        body {
-            font-family: 'Noto Sans TC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
-            background: #0b0b16 !important;
+        /* ===== Variables & Core ===== */
+        :root {
+            --ae-primary: #8b5cf6;
+            --ae-primary-rgb: 139, 92, 246;
+            --ae-primary-grad: linear-gradient(135deg, #7c3aed, #a855f7);
+            --ae-gold: #fbbf24;
+            --ae-gold-rgb: 251, 191, 36;
+            --ae-success-rgb: 16, 185, 129;
+            --ae-danger-rgb: 239, 68, 68;
+            --ae-bg-base: #0b0b16;
+            --ae-bg-panel: linear-gradient(135deg, rgba(15,12,41,0.98), rgba(36,36,62,0.96));
+            --ae-bg-surface: rgba(255,255,255,0.04);
+            --ae-bg-hover: rgba(255,255,255,0.08);
+            --ae-bg-input: rgba(30,41,59,0.4);
+            --ae-border-light: rgba(255,255,255,0.08);
+            --ae-border-primary: rgba(139,92,246,0.3);
+            --ae-text-primary: rgba(255,255,255,0.92);
+            --ae-text-secondary: rgba(255,255,255,0.7);
+            --ae-text-muted: rgba(255,255,255,0.45);
         }
-        #page,
-        #content,
-        .site-content,
-        #primary,
-        #main {
-            background: #0b0b16 !important;
-        }
-        #content,
-        .site-content,
-        #primary,
-        #main {
+
+        /* ===== Layout Utility ===== */
+        .ae-flex-center { display: flex; align-items: center; justify-content: center; }
+        .ae-flex-row { display: flex; align-items: center; gap: 8px; }
+
+        body, #page, #content, .site-content, #primary, #main {
+            font-family: 'Noto Sans TC', sans-serif !important;
+            background: var(--ae-bg-base) !important;
             min-height: 100vh;
         }
- 
-        /* Hide ads */
-        #ad-1, #ad-2, #ad-3, #ad-4, #ad-5,
-        .sidebar-discord,
-        [id^="ad-"] > a > img {
+
+        /* Hide ads & default UI */
+        #ad-1, #ad-2, #ad-3, #ad-4, #ad-5, .sidebar-discord, [id^="ad-"] > a > img,
+        #site-navigation, .main-navigation, #primary-menu,
+        #colophon .site-info, #colophon .social-url, .darkmode-control, #colophon .scroll-top:not(#ae-scroll-top-btn-cloned) {
             display: none !important;
         }
- 
-        /* ===== Scrollbar ===== */
+
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.4); border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(139,92,246,0.6); }
- 
-        /* ===== Header ===== */
-        #site-navigation,
-        .main-navigation,
-        #primary-menu {
-            display: none !important;
-        }
-        #masthead {
-            position: relative !important;
-            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%) !important;
-            box-shadow: 0 4px 30px rgba(0,0,0,0.3) !important;
-            border-bottom: 1px solid rgba(139,92,246,0.3) !important;
-        }
-        #masthead .header-content {
-            position: relative !important;
-            padding-top: 8px !important;
-            padding-bottom: 8px !important;
-            min-height: 56px !important;
-        }
-        #masthead .header-content.inline .site-title {
-            padding: 6px 14px !important;
-        }
-        #masthead .header-content.inline .main-navigation {
-            padding: 0 !important;
-        }
-        #masthead .site-title,
-        #masthead .site-title h1 {
-            margin: 0 !important;
-            line-height: 1.15 !important;
-        }
-        #masthead .site-title h1 {
-            font-size: 1.75rem !important;
-        }
-        .site-title h1 a {
-            background: linear-gradient(135deg, #a78bfa, #c084fc, #e879f9) !important;
-            -webkit-background-clip: text !important;
-            -webkit-text-fill-color: transparent !important;
-            font-weight: 700 !important;
-            letter-spacing: 1px !important;
-            line-height: 1.15 !important;
-        }
-        #primary-menu a {
-            color: rgba(255,255,255,0.85) !important;
-            transition: all 0.3s ease !important;
-            position: relative !important;
-        }
-        #primary-menu a:hover { color: #c084fc !important; }
-        #primary-menu a::after {
-            content: ''; position: absolute; bottom: -2px; left: 50%;
-            width: 0; height: 2px;
-            background: linear-gradient(90deg, #a78bfa, #e879f9);
-            transition: all 0.3s ease; transform: translateX(-50%);
-        }
-        #primary-menu a:hover::after { width: 80%; }
- 
-        /* Mobile fallback: neutralize theme header token to avoid gray title block */
-        @media (max-width: 640px) {
-            :root {
-                --animeone-header-background: transparent !important;
-            }
-            .site-header,
-            .site-branding,
-            .site-navigation,
-            .main-navigation {
-                background: transparent !important;
-                border-color: transparent !important;
-            }
-            #masthead {
-                background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%) !important;
-            }
-        }
- 
-        /* ===== Footer ===== */
-        #colophon {
-            background: linear-gradient(135deg, #0f0c29, #1a1640) !important;
-            border-top: 1px solid rgba(139,92,246,0.2) !important;
-        }
- 
-        /* Footer utilities: move controls to floating corners and hide footer info */
-        #colophon {
-            background: transparent !important;
-            border-top: none !important;
-            min-height: 0 !important;
-            padding: 0 !important;
-        }
-        #colophon .site-info,
-        #colophon .social-url {
-            display: none !important;
-        }
- 
-        /* Hide theme's native scrolltop and darkmode */
-        #colophon .scroll-top:not(#ae-scroll-top-btn-cloned),
-        .darkmode-control {
-            display: none !important;
-            opacity: 0 !important;
-            pointer-events: none !important;
-        }
- 
+        ::-webkit-scrollbar-thumb { background: rgba(var(--ae-primary-rgb),0.4); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(var(--ae-primary-rgb),0.6); }
+
+
+
+        /* Footer reset */
+        #colophon { background: transparent !important; border: none !important; padding: 0 !important; }
+
+        /* Common FAB Button */
         .ae-settings-fab {
-            position: fixed !important;
-            right: 18px !important;
-            z-index: 9999 !important;
-            width: 44px !important;
-            height: 44px !important;
-            border-radius: 999px !important;
-            padding: 0 !important;
-            display: inline-flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            color: #f8fafc !important;
-            cursor: pointer !important;
+            position: fixed !important; right: 18px !important; z-index: 9999 !important;
+            width: 44px !important; height: 44px !important; border-radius: 999px !important;
+            color: #f8fafc !important; cursor: pointer !important; text-decoration: none !important;
             background: radial-gradient(circle at 28% 22%, rgba(196,181,253,0.35), rgba(124,58,237,0.42) 46%, rgba(15,23,42,0.84) 100%) !important;
             border: 1px solid rgba(196,181,253,0.42) !important;
             box-shadow: 0 10px 24px rgba(76,29,149,0.36), inset 0 1px 0 rgba(255,255,255,0.16) !important;
             backdrop-filter: blur(10px) saturate(1.1) !important;
             transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease !important;
-            text-decoration: none !important;
+            display: inline-flex; align-items: center; justify-content: center;
         }
-        .ae-settings-fab:hover {
-            transform: scale(1.04) !important;
+        .ae-settings-fab:hover { transform: scale(1.04) !important; }
+        .ae-page-jump-ball:hover { transform: translateY(-50%) scale(1.04) !important; }
+        .ae-settings-fab:hover, .ae-page-jump-ball:hover {
             border-color: rgba(216,180,254,0.7) !important;
             box-shadow: 0 14px 30px rgba(109,40,217,0.45), inset 0 1px 0 rgba(255,255,255,0.24) !important;
         }
-        #ae-scroll-top-btn-cloned::before,
-        #ae-scroll-top-btn-cloned::after {
-            display: none !important;
-        }
- 
-        #ae-tmdb-settings-btn {
-            bottom: 74px !important;
-        }
-        #ae-scroll-top-btn-cloned {
-            bottom: 18px !important;
-        }
-        #ae-scroll-top-btn-cloned,
-        #ae-scroll-top-btn-cloned * {
-            color: #f8fafc !important;
-            fill: #f8fafc !important;
-        }
- 
-        #ae-tmdb-settings-btn.ae-settings-fab > span {
-            display: none !important;
-        }
-        #ae-tmdb-settings-btn.ae-settings-fab .inline-svg {
-            width: 17px !important;
-            height: 17px !important;
-            margin: 0 !important;
-        }
-        #ae-tmdb-settings-btn.ae-settings-fab .inline-svg path[stroke] {
-            stroke: currentColor !important;
-            fill: none !important;
-        }
-        #ae-tmdb-settings-btn.ae-settings-fab .inline-svg path:not([stroke]) {
-            fill: currentColor !important;
-        }
- 
+        #ae-tmdb-settings-btn { bottom: 74px !important; }
+        #ae-scroll-top-btn-cloned { bottom: 18px !important; }
+        #ae-scroll-top-btn-cloned *, #ae-scroll-top-btn-cloned { color: #f8fafc !important; fill: #f8fafc !important; display: inline-flex !important; }
+        #ae-tmdb-settings-btn.ae-settings-fab > span { display: none !important; }
+        #ae-tmdb-settings-btn.ae-settings-fab .inline-svg { width: 17px !important; height: 17px !important; margin: 0 !important; fill: currentColor !important; }
+
+        /* Common Modal Overlay & Panel */
         .ae-modal-overlay {
-            position: fixed;
-            inset: 0;
-            z-index: 2147483647;
-            background: rgba(2, 6, 23, 0.72);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 16px;
-            backdrop-filter: blur(4px);
+            position: fixed; inset: 0; z-index: 2147483647; background: rgba(2, 6, 23, 0.72);
+            backdrop-filter: blur(4px); padding: 16px; display: flex; align-items: center; justify-content: center;
         }
         .ae-modal-panel {
-            width: min(640px, 100%);
-            background: linear-gradient(135deg, rgba(15,12,41,0.98), rgba(36,36,62,0.96));
-            border: 1px solid rgba(139,92,246,0.35);
-            border-radius: 16px;
-            box-shadow: 0 22px 52px rgba(2,6,23,0.55);
-            padding: 18px 18px 16px;
-            color: rgba(255,255,255,0.92);
-            position: relative;
+            width: min(640px, 100%); background: var(--ae-bg-panel); border: 1px solid var(--ae-border-primary);
+            border-radius: 16px; box-shadow: 0 22px 52px rgba(0,0,0,0.55); padding: 18px; color: var(--ae-text-primary); position: relative;
         }
-        .ae-modal-title {
-            margin: 0 0 8px !important;
-            font-size: 22px !important;
-            font-weight: 700 !important;
-            color: #ddd6fe !important;
+        .ae-modal-title { margin: 0 0 8px !important; font-size: 22px !important; font-weight: 700 !important; color: #ddd6fe !important; }
+        .ae-modal-tip, .ae-modal-status, .ae-modal-steps { color: var(--ae-text-secondary); font-size: 13px; margin: 0 0 10px; line-height:1.6; }
+        .ae-modal-steps a { color: var(--ae-primary); text-decoration: underline; }
+        .ae-meta-sub { font-size: 11px; color: rgba(255,255,255,0.35); }
+
+        /* Form Controls */
+        .ae-modal-field input, .ae-fav-rename-input {
+            width: 100%; height: 38px; border-radius: 10px; border: 1px solid var(--ae-border-primary);
+            background: var(--ae-bg-input); color: var(--ae-text-primary); padding: 0 12px; outline: none; font-family: inherit;
         }
-        .ae-modal-tip {
-            margin: 0 0 10px !important;
-            color: rgba(255,255,255,0.72) !important;
-            font-size: 13px !important;
-        }
-        .ae-modal-steps {
-            margin: 0 0 14px !important;
-            padding-left: 20px !important;
-            color: rgba(255,255,255,0.85) !important;
-            font-size: 13px !important;
-            line-height: 1.6 !important;
-        }
-        .ae-modal-field {
-            margin-bottom: 12px;
-        }
-        .ae-modal-field label {
-            display: block;
-            margin-bottom: 6px;
-            color: rgba(196,181,253,0.92);
-            font-size: 12px;
-            font-weight: 600;
-            letter-spacing: 0.3px;
-        }
-        .ae-modal-steps a {
-            color: #4ade80 !important;
-            text-decoration: underline !important;
-            transition: color 0.2s ease;
-        }
-        .ae-modal-steps a:hover {
-            color: #e9d5ff !important;
-        }
-        .ae-modal-field input {
-            width: 100%;
-            height: 38px;
-            border-radius: 10px;
-            border: 1px solid rgba(139,92,246,0.35);
-            background: rgba(30,41,59,0.42);
-            color: rgba(255,255,255,0.95);
-            padding: 0 12px;
-            outline: none;
-        }
-        .ae-modal-field input:focus {
-            border-color: rgba(167,139,250,0.9);
-            box-shadow: 0 0 0 3px rgba(139,92,246,0.2);
-        }
-        .ae-test-api-warning {
-            margin: 8px 0 0;
-            color: #fcd34d;
-            font-size: 12px;
-            line-height: 1.5;
-            display: none;
-        }
-        .ae-modal-status {
-            min-height: 20px;
-            margin-bottom: 10px;
-            font-size: 12px;
-            color: rgba(255,255,255,0.64);
-        }
-        .ae-modal-status.is-success { color: #86efac; }
-        .ae-modal-status.is-error { color: #fca5a5; }
-        .ae-modal-status.is-warn { color: #fde68a; }
-        .ae-modal-actions {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-        .ae-modal-actions-spacer {
-            flex: 1;
-        }
-        .ae-modal-btn {
-            height: 36px;
-            border-radius: 10px;
-            border: 1px solid transparent;
-            padding: 0 12px;
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            font-family: inherit;
-        }
-        .ae-modal-btn-primary {
-            background: linear-gradient(135deg, #7c3aed, #a855f7);
-            color: #fff;
-            border-color: rgba(196,181,253,0.35);
-        }
-        .ae-modal-btn-primary:hover {
-            filter: brightness(1.08);
-        }
-        .ae-modal-btn-ghost {
-            background: rgba(30,41,59,0.48);
-            border-color: rgba(148,163,184,0.4);
-            color: rgba(226,232,240,0.92);
-        }
-        .ae-modal-btn-ghost:hover {
-            background: rgba(51,65,85,0.7);
-        }
-        .ae-modal-btn-danger {
-            background: rgba(127,29,29,0.72);
-            border-color: rgba(248,113,113,0.55);
-            color: #fecaca;
-        }
-        .ae-modal-btn-danger:hover {
-            background: rgba(185,28,28,0.9);
-            color: #fff;
-        }
-        .ae-modal-close {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            width: 30px;
-            height: 30px;
-            border-radius: 999px;
-            border: 1px solid rgba(148,163,184,0.45);
-            background: rgba(30,41,59,0.52);
-            color: rgba(226,232,240,0.9);
-            font-size: 19px;
-            line-height: 1;
-            cursor: pointer;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .ae-modal-close:hover {
-            background: rgba(71,85,105,0.85);
-            color: #fff;
-        }
-        @media (max-width: 640px) {
-            .ae-modal-panel {
-                padding: 14px 12px 12px;
-                border-radius: 12px;
-            }
-            .ae-modal-title { font-size: 18px !important; }
-            .ae-modal-btn {
-                height: 34px;
-            }
-        }
- 
-        /* Favorite Star Button */
+        .ae-modal-field input:focus, .ae-fav-rename-input:focus { border-color: var(--ae-primary); box-shadow: 0 0 0 3px rgba(var(--ae-primary-rgb), 0.2); }
+        .ae-modal-btn { height: 36px; border-radius: 10px; border: 1px solid transparent; padding: 0 12px; font-weight: 600; cursor: pointer; transition: 0.2s; background: rgba(30,41,59,0.48); color: var(--ae-text-primary); }
+        .ae-modal-btn-primary { background: var(--ae-primary-grad); color: #fff; }
+        .ae-modal-btn-primary:hover { filter: brightness(1.1); }
+        .ae-modal-btn:hover { background: rgba(51,65,85,0.7); }
+        .ae-modal-close { position: absolute; top: 10px; right: 10px; width: 30px; height: 30px; border-radius: 50%; border: 1px solid rgba(148,163,184,0.45); background: rgba(30,41,59,0.52); color: var(--ae-text-primary); cursor: pointer; font-size: 19px; display: inline-flex; align-items: center; justify-content: center; }
+
+        /* Generic shared lists */
+        .ae-fav-cat-list, .ae-fav-manage-list { max-height: 300px; overflow-y: auto; margin-bottom: 14px; display: flex; flex-direction: column; gap: 4px; }
+        .ae-fav-cat-item, .ae-fav-manage-item { padding: 10px 14px; border-radius: 10px; background: var(--ae-bg-surface); border: 1px solid var(--ae-border-light); display: flex; align-items: center; gap: 10px; transition: 0.2s; cursor: pointer; }
+        .ae-fav-cat-item:hover, .ae-fav-manage-item:hover { background: var(--ae-bg-hover); border-color: rgba(var(--ae-gold-rgb), 0.3); }
+        .ae-fav-cat-label, .ae-fav-manage-name { flex: 1; font-size: 14px; }
+        .ae-fav-cat-check { accent-color: var(--ae-gold); width: 16px; height: 16px; cursor: pointer; }
+        .ae-fav-manage-count { font-size: 12px; color: var(--ae-text-muted); }
+        .ae-fav-act-btn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid rgba(148,163,184,0.3); background: rgba(30,41,59,0.5); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+
         .ae-fav-star {
-            position: absolute; bottom: 8px; right: 8px;
-            width: 32px; height: 32px;
-            border-radius: 999px; border: none;
-            background: rgba(0,0,0,0.55); backdrop-filter: blur(8px);
-            color: rgba(255,255,255,0.5);
-            cursor: pointer; z-index: 3;
-            display: inline-flex; align-items: center; justify-content: center;
-            padding: 0; transition: all 0.25s ease;
+            position: absolute; bottom: 8px; right: 8px; width: 32px; height: 32px; border-radius: 50%;
+            background: rgba(0,0,0,0.55); backdrop-filter: blur(8px); color: rgba(255,255,255,0.5); border: none; z-index: 3;
+            display: inline-flex; align-items: center; justify-content: center; transition: 0.25s; cursor: pointer;
         }
-        .ae-fav-star svg { fill: none; stroke: currentColor; stroke-width: 1.8; transition: all 0.25s ease; }
-        .ae-fav-star:hover { background: rgba(0,0,0,0.75); color: #fbbf24; transform: scale(1.15); }
-        .ae-fav-star:hover svg { fill: rgba(251,191,36,0.3); stroke: #fbbf24; }
-        .ae-fav-star.is-favorited { color: #fbbf24; }
-        .ae-fav-star.is-favorited svg { fill: #fbbf24; stroke: #fbbf24; }
-        .ae-fav-star.is-favorited:hover { color: #fde68a; }
-        .ae-fav-star.is-favorited:hover svg { fill: #fde68a; stroke: #fde68a; }
- 
-        /* Favorites Modal */
-        .ae-fav-modal-panel { max-width: 420px; }
-        .ae-fav-modal-title {
-            display: flex !important; align-items: center !important; gap: 8px !important;
-        }
-        .ae-fav-modal-title svg { flex-shrink: 0; }
-        .ae-fav-cat-list {
-            max-height: 280px; overflow-y: auto;
-            margin-bottom: 14px;
-            display: flex; flex-direction: column; gap: 4px;
-        }
-        .ae-fav-cat-item {
-            display: flex; align-items: center; gap: 10px;
-            padding: 10px 12px; border-radius: 10px;
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.08);
-            cursor: pointer; transition: all 0.2s ease;
-        }
-        .ae-fav-cat-item:hover { background: rgba(255,255,255,0.08); border-color: rgba(251,191,36,0.3); }
-        .ae-fav-cat-check {
-            accent-color: #f59e0b; width: 16px; height: 16px; cursor: pointer;
-        }
-        .ae-fav-cat-label { flex: 1; font-size: 14px; color: rgba(255,255,255,0.9); }
-        .ae-fav-cat-badge {
-            font-size: 10px; padding: 2px 8px; border-radius: 999px;
-            background: rgba(251,191,36,0.15); color: #fde68a;
-            border: 1px solid rgba(251,191,36,0.3);
-        }
-        .ae-fav-add-row {
-            display: flex; gap: 8px; align-items: center;
-        }
-        .ae-fav-new-cat-input {
-            flex: 1; height: 36px; border-radius: 10px;
-            border: 1px solid rgba(139,92,246,0.3);
-            background: rgba(30,41,59,0.4); color: rgba(255,255,255,0.92);
-            padding: 0 12px; font-size: 13px; outline: none; font-family: inherit;
-        }
-        .ae-fav-new-cat-input:focus {
-            border-color: rgba(251,191,36,0.7);
-            box-shadow: 0 0 0 2px rgba(251,191,36,0.15);
-        }
-        .ae-fav-add-btn { flex-shrink: 0; }
- 
-        /* Manage Modal */
-        .ae-fav-manage-panel { max-width: 480px; }
-        .ae-fav-manage-list {
-            max-height: 320px; overflow-y: auto;
-            margin-bottom: 14px;
-            display: flex; flex-direction: column; gap: 4px;
-        }
-        .ae-fav-manage-item {
-            display: flex; align-items: center; gap: 10px;
-            padding: 10px 14px; border-radius: 10px;
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.08);
-            transition: all 0.2s ease;
-        }
-        .ae-fav-manage-item:hover { background: rgba(255,255,255,0.07); }
-        .ae-fav-manage-name { flex: 1; font-size: 14px; color: rgba(255,255,255,0.9); font-weight: 500; }
-        .ae-fav-manage-count { font-size: 12px; color: rgba(255,255,255,0.45); white-space: nowrap; }
-        .ae-fav-manage-actions { display: flex; gap: 6px; align-items: center; }
-        .ae-fav-manage-default {
-            font-size: 11px; color: rgba(251,191,36,0.7);
-            padding: 2px 8px; border-radius: 6px;
-            background: rgba(251,191,36,0.1);
-        }
-        .ae-fav-act-btn {
-            width: 30px; height: 30px; border-radius: 8px;
-            border: 1px solid rgba(148,163,184,0.3);
-            background: rgba(30,41,59,0.5); cursor: pointer;
-            display: inline-flex; align-items: center; justify-content: center;
-            font-size: 14px; padding: 0; transition: all 0.2s ease;
-        }
-        .ae-fav-act-btn:hover { background: rgba(51,65,85,0.7); border-color: rgba(196,181,253,0.5); }
-        .ae-fav-rename-input {
-            flex: 1; height: 32px; border-radius: 8px;
-            border: 1px solid rgba(251,191,36,0.5);
-            background: rgba(30,41,59,0.6); color: rgba(255,255,255,0.92);
-            padding: 0 10px; font-size: 14px; outline: none; font-family: inherit;
-        }
-        .ae-fav-rename-input:focus {
-            border-color: rgba(251,191,36,0.8);
-            box-shadow: 0 0 0 2px rgba(251,191,36,0.2);
-        }
+        .ae-fav-star svg { fill: none; stroke: currentColor; stroke-width: 1.8; transition: 0.25s; }
+        .ae-fav-star:hover, .ae-fav-star.is-favorited { color: var(--ae-gold); background: rgba(0,0,0,0.75); }
+        .ae-fav-star:hover svg, .ae-fav-star.is-favorited svg { fill: currentColor; stroke: currentColor; }
     `);
- 
+
     // ===================== HOMEPAGE =====================
     function isHomePage() {
         return document.body.classList.contains('home') ||
             (location.pathname === '/' && document.querySelector('#table-list'));
     }
- 
+
     async function enhanceHomePage() {
         // Hide original content immediately
         const article = document.querySelector('article');
         const entryContent = article?.querySelector('.entry-content');
         if (!entryContent) return;
- 
+
         injectCSS(HOMEPAGE_CSS);
- 
+
         // Hide sidebar, full width
         const primary = document.querySelector('#primary');
         const secondary = document.querySelector('#secondary');
@@ -1033,7 +724,7 @@
         if (secondary) secondary.style.display = 'none';
         const siteContent = document.querySelector('.site-content');
         if (siteContent) siteContent.style.cssText = 'max-width:1400px!important;margin:0 auto!important;padding:0 20px!important;';
- 
+
         // Show loading state
         entryContent.innerHTML = `
             <div id="anime-enhanced-home">
@@ -1043,7 +734,7 @@
                 </div>
             </div>
         `;
- 
+
         // Fetch anime list directly from API
         let animeList = [];
         try {
@@ -1066,14 +757,14 @@
             `;
             return;
         }
- 
+
         if (animeList.length === 0) {
             document.getElementById('anime-enhanced-home').innerHTML = `
                 <div class="ae-error">無法取得動畫列表資料。</div>
             `;
             return;
         }
- 
+
         // Build UI
         const container = document.getElementById('anime-enhanced-home');
         container.innerHTML = `
@@ -1102,7 +793,7 @@
             <div class="ae-infinite-status" id="ae-infinite-status"></div>
             <div class="ae-scroll-sentinel" id="ae-scroll-sentinel" aria-hidden="true"></div>
         `;
- 
+
         // Build season filters dynamically
         const seasons = new Set();
         animeList.forEach(a => { if (a.year && a.season) seasons.add(`${a.year}年${a.season}季`); });
@@ -1126,7 +817,7 @@
             });
             seasonContainer.appendChild(btn);
         });
- 
+
         const grid = document.getElementById('ae-grid');
         const statusEl = document.getElementById('ae-infinite-status');
         const sentinelEl = document.getElementById('ae-scroll-sentinel');
@@ -1139,7 +830,7 @@
         let continueMetaByCat = new Map();
         let renderCursor = 0;
         let loadingMore = false;
- 
+
         function ensurePageJumpBall() {
             let ball = document.getElementById('ae-page-jump-ball');
             if (!ball) {
@@ -1153,11 +844,11 @@
             }
             pageInputEl = ball.querySelector('#ae-page-jump-input');
         }
- 
+
         function getTotalPages() {
             return Math.max(1, Math.ceil(filteredList.length / batchSize));
         }
- 
+
         function getCurrentPageByScroll() {
             if (!grid) return 1;
             const cards = grid.querySelectorAll('.ae-card');
@@ -1173,14 +864,14 @@
             }
             return Math.max(1, Math.ceil(renderCursor / batchSize));
         }
- 
+
         function syncPageJumpBall(force = false) {
             if (!pageInputEl) return;
             const totalPages = getTotalPages();
             if (!force && document.activeElement === pageInputEl) return;
             pageInputEl.value = String(Math.min(getCurrentPageByScroll(), totalPages));
         }
- 
+
         function jumpToPage(pageNumber) {
             const totalPages = getTotalPages();
             const targetPage = Math.min(totalPages, Math.max(1, pageNumber));
@@ -1199,7 +890,7 @@
                 syncPageJumpBall(true);
             });
         }
- 
+
         function filterAndRender() {
             const watchMap = getWatchProgressMap();
             continueMetaByCat = new Map();
@@ -1232,7 +923,7 @@
             refreshFavoritesPanel();
             setupFavDragDrop();
         }
- 
+
         function updateStatus() {
             if (!statusEl) return;
             if (filteredList.length === 0) {
@@ -1249,7 +940,7 @@
             }
             statusEl.textContent = '向下捲動以載入更多';
         }
- 
+
         function renderNextBatch() {
             if (loadingMore || renderCursor >= filteredList.length) {
                 updateStatus();
@@ -1257,27 +948,27 @@
             }
             loadingMore = true;
             updateStatus();
- 
+
             const start = renderCursor;
             const batchItems = filteredList.slice(start, start + batchSize);
             const frag = document.createDocumentFragment();
- 
+
             batchItems.forEach((anime, idx) => {
                 frag.appendChild(createCard(anime, start + idx));
             });
             grid.appendChild(frag);
- 
+
             batchItems.forEach((anime, idx) => {
                 const cardKey = `${anime.catId}-${start + idx}`;
                 loadCover(anime.name, cardKey);
             });
- 
+
             renderCursor += batchItems.length;
             loadingMore = false;
             updateStatus();
             syncPageJumpBall();
         }
- 
+
         function createCard(anime, index) {
             const card = document.createElement('a');
             const cardKey = `${anime.catId}-${index}`;
@@ -1286,7 +977,7 @@
             card.dataset.index = index;
             card.dataset.cardKey = cardKey;
             card.style.animationDelay = `${(index % batchSize) * 0.03}s`;
- 
+
             const isAiring = anime.episodes.includes('連載中');
             const epMatch = anime.episodes.match(/\((\d+)\)/) || anime.episodes.match(/^(\d[\d-]*)$/);
             const epText = epMatch ? epMatch[1] : anime.episodes;
@@ -1294,7 +985,7 @@
             const progressText = progress?.lastEpisode
                 ? `上次觀看到 EP ${String(progress.lastEpisode).padStart(2, '0')}`
                 : (progress?.lastEpisodeLabel ? `上次觀看到 ${progress.lastEpisodeLabel}` : '');
- 
+
             card.innerHTML = `
                 <div class="ae-card-poster">
                     <div class="ae-card-poster-placeholder">
@@ -1322,15 +1013,15 @@
             `;
             return card;
         }
- 
+
         async function loadCover(name, cardKey) {
             const card = grid.querySelector(`.ae-card[data-card-key="${cardKey}"]`);
             if (!card) return;
             const img = card.querySelector('.ae-card-img');
             const placeholder = card.querySelector('.ae-card-poster-placeholder');
- 
+
             const data = await searchTmdb(name);
- 
+
             if (data && data.poster) {
                 const showImage = (src) => {
                     img.onload = () => {
@@ -1340,7 +1031,7 @@
                     img.style.display = 'block';
                     img.src = src;
                 };
- 
+
                 const gmFallback = () => {
                     GM_xmlhttpRequest({
                         method: 'GET',
@@ -1373,7 +1064,7 @@
                         }
                     });
                 };
- 
+
                 img.referrerPolicy = 'origin';
                 img.onerror = () => {
                     gmFallback();
@@ -1382,7 +1073,7 @@
                 showImage(data.poster);
             }
         }
- 
+
         // Events
         document.getElementById('ae-search-input')?.addEventListener('input', debounce(filterAndRender, 300));
         document.querySelectorAll('.ae-pill:not(.ae-pill-season)').forEach(pill => {
@@ -1429,7 +1120,7 @@
             deleteWatchProgressForAnime({ catId: anime.catId, animeName: anime.name });
             filterAndRender();
         });
- 
+
         if ('IntersectionObserver' in window && sentinelEl) {
             const loadObserver = new IntersectionObserver((entries) => {
                 const shouldLoad = entries.some(entry => entry.isIntersecting);
@@ -1443,7 +1134,7 @@
                 if (rect.top < window.innerHeight + 800) renderNextBatch();
             }, 100));
         }
- 
+
         ensurePageJumpBall();
         if (pageInputEl) {
             pageInputEl.addEventListener('keydown', (e) => {
@@ -1460,7 +1151,7 @@
             pageInputEl.addEventListener('blur', () => syncPageJumpBall(true));
         }
         window.addEventListener('scroll', debounce(() => syncPageJumpBall(), 80));
- 
+
         function refreshFavoritesPanel() {
             const panel = document.getElementById('ae-fav-panel');
             if (!panel) return;
@@ -1473,7 +1164,7 @@
             if (!tabsContainer) return;
             tabsContainer.innerHTML = '';
             const data = getFavoritesData();
- 
+
             // "All" tab
             const allTab = document.createElement('button');
             allTab.type = 'button';
@@ -1484,7 +1175,7 @@
             allTab.addEventListener('dragleave', () => allTab.classList.remove('ae-drag-over'));
             allTab.addEventListener('drop', e => { e.preventDefault(); allTab.classList.remove('ae-drag-over'); });
             tabsContainer.appendChild(allTab);
- 
+
             data.categories.forEach(cat => {
                 const tab = document.createElement('button');
                 tab.type = 'button';
@@ -1493,7 +1184,7 @@
                 const count = Object.values(data.items).filter(arr => arr.includes(cat.id)).length;
                 tab.textContent = `${cat.name} (${count})`;
                 tab.addEventListener('click', () => { currentFavCategory = (currentFavCategory === cat.id) ? '' : cat.id; filterAndRender(); });
- 
+
                 // Drop target for drag
                 tab.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; tab.classList.add('ae-drag-over'); });
                 tab.addEventListener('dragleave', () => tab.classList.remove('ae-drag-over'));
@@ -1511,7 +1202,7 @@
                 tabsContainer.appendChild(tab);
             });
         }
- 
+
         function setupFavDragDrop() {
             if (currentFilter !== 'favorites' || !currentFavCategory) {
                 grid.querySelectorAll('.ae-card').forEach(c => { c.draggable = false; c.classList.remove('ae-draggable'); });
@@ -1521,7 +1212,7 @@
                 card.draggable = true;
                 card.classList.add('ae-draggable');
             });
- 
+
             // Only bind once
             if (!grid.dataset.favDragBound) {
                 grid.dataset.favDragBound = '1';
@@ -1545,10 +1236,10 @@
                 });
             }
         }
- 
+
         filterAndRender();
     }
- 
+
     function fetchAnimeList() {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -1563,11 +1254,11 @@
             });
         });
     }
- 
+
     function debounce(fn, delay) {
         let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), delay); };
     }
- 
+
     function updateCardFavoriteStar(catId) {
         document.querySelectorAll(`.ae-fav-star[data-cat-id="${catId}"]`).forEach(star => {
             const isFav = isAnimeFavorited(catId);
@@ -1582,597 +1273,219 @@
             if (textEl) textEl.textContent = isFav ? '取消收藏' : '加入收藏';
         }
     }
- 
+
     function openFavoritesModal(anime) {
-        const existing = document.getElementById('ae-fav-modal');
-        if (existing) existing.remove();
         const key = `cat:${anime.catId}`;
- 
         const buildCatList = () => {
-            const d = getFavoritesData();
-            const checked = d.items[key] || [];
+            const d = getFavoritesData(); const checked = d.items[key] || [];
             return d.categories.map(c => `
                 <label class="ae-fav-cat-item">
                     <input type="checkbox" class="ae-fav-cat-check" data-cat-id="${c.id}" ${checked.includes(c.id) ? 'checked' : ''}>
-                    <span class="ae-fav-cat-label">${c.name}</span>
-                    ${c.isDefault ? '<span class="ae-fav-cat-badge">默認</span>' : ''}
-                </label>
-            `).join('');
+                    <span class="ae-fav-cat-label">${c.name}</span>${c.isDefault ? '<span class="ae-fav-cat-badge">默認</span>' : ''}
+                </label>`).join('');
         };
- 
-        const overlay = document.createElement('div');
-        overlay.id = 'ae-fav-modal';
-        overlay.className = 'ae-modal-overlay';
-        overlay.innerHTML = `
-            <div class="ae-modal-panel ae-fav-modal-panel" role="dialog" aria-modal="true">
-                <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
-                <h2 class="ae-modal-title ae-fav-modal-title">
-                    <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="#fbbf24" stroke="#fbbf24" stroke-width="1"/></svg>
-                    收藏 — ${anime.name}
-                </h2>
-                <div class="ae-fav-cat-list" id="ae-fav-cat-list">${buildCatList()}</div>
-                <div class="ae-modal-footer" style="display:flex; justify-content:space-between; margin-top:16px;">
-                    <button type="button" id="ae-fav-add-cat-btn" class="ae-modal-btn ae-modal-btn-ghost">新增</button>
-                    <button type="button" id="ae-fav-save-btn" class="ae-modal-btn ae-modal-btn-primary">保存</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(overlay);
- 
-        const close = () => overlay.remove();
-        overlay.querySelector('.ae-modal-close').addEventListener('click', close);
-        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-        const onKey = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
-        document.addEventListener('keydown', onKey);
- 
-        overlay.querySelector('#ae-fav-cat-list').addEventListener('change', e => {
-            const check = e.target.closest('.ae-fav-cat-check');
-            if (!check) return;
-            toggleAnimeInCategory(anime.catId, anime.name, check.dataset.catId);
-            updateCardFavoriteStar(anime.catId);
-        });
- 
-        overlay.querySelector('#ae-fav-save-btn').addEventListener('click', close);
-        overlay.querySelector('#ae-fav-add-cat-btn').addEventListener('click', () => {
-            const listEl = overlay.querySelector('#ae-fav-cat-list');
-            if (listEl.querySelector('.ae-fav-inline-add')) return;
-            const addRow = document.createElement('div');
-            addRow.className = 'ae-fav-cat-item ae-fav-inline-add';
-            addRow.style.padding = '6px 12px';
-            addRow.innerHTML = `
-                <input type="text" class="ae-fav-rename-input ae-inline-add-input" placeholder="新增分類名稱..." maxlength="30" style="flex:1;">
-                <button type="button" class="ae-fav-act-btn ae-fav-confirm-add-btn" title="確認" style="flex-shrink:0;">✓</button>
-                <button type="button" class="ae-fav-act-btn ae-fav-cancel-add-btn" title="取消" style="flex-shrink:0;">✗</button>
-            `;
-            listEl.appendChild(addRow);
-            const input = addRow.querySelector('input');
-            input.focus();
-            const doInlineAdd = () => {
-                const name = input.value.trim();
-                if (name) addFavoriteCategory(name);
-                listEl.innerHTML = buildCatList();
-            };
-            addRow.querySelector('.ae-fav-confirm-add-btn').addEventListener('click', doInlineAdd);
-            addRow.querySelector('.ae-fav-cancel-add-btn').addEventListener('click', () => {
-                listEl.innerHTML = buildCatList();
-            });
-            input.addEventListener('keydown', e => {
-                if (e.key === 'Enter') { e.preventDefault(); doInlineAdd(); }
-                if (e.key === 'Escape') { e.preventDefault(); listEl.innerHTML = buildCatList(); }
-            });
-            listEl.scrollTop = listEl.scrollHeight;
+        createBaseModal({
+            id: 'ae-fav-modal', width: 420,
+            title: `<svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="#fbbf24" stroke="#fbbf24" stroke-width="1"/></svg>收藏 — ${anime.name}`,
+            content: `<div class="ae-fav-cat-list" id="ae-fav-cat-list">${buildCatList()}</div>`,
+            onActionHTML: `<button type="button" id="ae-fav-add-cat-btn" class="ae-modal-btn ae-modal-btn-ghost">新增</button>
+                           <button type="button" id="ae-fav-save-btn" class="ae-modal-btn ae-modal-btn-primary">保存</button>`,
+            onActionClick: (overlay, close) => {
+                overlay.querySelector('#ae-fav-save-btn').addEventListener('click', close);
+                overlay.querySelector('#ae-fav-cat-list').addEventListener('change', e => {
+                    const check = e.target.closest('.ae-fav-cat-check'); if (!check) return;
+                    toggleAnimeInCategory(anime.catId, anime.name, check.dataset.catId);
+                    updateCardFavoriteStar(anime.catId);
+                });
+                overlay.querySelector('#ae-fav-add-cat-btn').addEventListener('click', () => {
+                    const listEl = overlay.querySelector('#ae-fav-cat-list'); if (listEl.querySelector('.ae-fav-inline-add')) return;
+                    const addRow = document.createElement('div'); addRow.className = 'ae-fav-cat-item ae-fav-inline-add'; addRow.style.padding = '6px 12px';
+                    addRow.innerHTML = `<input type="text" class="ae-fav-rename-input ae-inline-add-input" placeholder="新增分類名稱..." maxlength="30" style="flex:1;">
+                        <button type="button" class="ae-fav-act-btn ae-fav-confirm-add-btn" title="确认" style="flex-shrink:0;">✓</button>
+                        <button type="button" class="ae-fav-act-btn ae-fav-cancel-add-btn" title="取消" style="flex-shrink:0;">✗</button>`;
+                    listEl.appendChild(addRow); const input = addRow.querySelector('input'); input.focus();
+                    const doAdd = () => { const name = input.value.trim(); if (name) addFavoriteCategory(name); listEl.innerHTML = buildCatList(); };
+                    addRow.querySelector('.ae-fav-confirm-add-btn').addEventListener('click', doAdd);
+                    addRow.querySelector('.ae-fav-cancel-add-btn').addEventListener('click', () => listEl.innerHTML = buildCatList());
+                    input.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); if (e.key === 'Escape') listEl.innerHTML = buildCatList(); });
+                    listEl.scrollTop = listEl.scrollHeight;
+                });
+            }
         });
     }
- 
+
     function openFavManageModal(onClose) {
-        const existing = document.getElementById('ae-fav-manage-modal');
-        if (existing) existing.remove();
-        const overlay = document.createElement('div');
-        overlay.id = 'ae-fav-manage-modal';
-        overlay.className = 'ae-modal-overlay';
- 
         const buildList = () => {
             const d = getFavoritesData();
             return d.categories.map(c => {
                 const count = Object.values(d.items).filter(arr => arr.includes(c.id)).length;
-                return `
-                    <div class="ae-fav-manage-item" data-cat-id="${c.id}">
-                        <span class="ae-fav-manage-name">${c.name}</span>
-                        <span class="ae-fav-manage-count">${count} 部</span>
-                        <div class="ae-fav-manage-actions">
-                            ${c.isDefault
-                        ? '<span class="ae-fav-manage-default">系統默認</span>'
-                        : `<button type="button" class="ae-fav-act-btn ae-fav-rename-btn" data-cat-id="${c.id}" title="重命名">✏️</button>
-                                   <button type="button" class="ae-fav-act-btn ae-fav-delete-btn" data-cat-id="${c.id}" title="刪除">🗑️</button>`
-                    }
-                        </div>
-                    </div>
-                `;
+                return `<div class="ae-fav-manage-item" data-cat-id="${c.id}"><span class="ae-fav-manage-name">${c.name}</span><span class="ae-fav-manage-count">${count} 部</span>
+                        <div class="ae-fav-manage-actions">${c.isDefault ? '<span class="ae-fav-manage-default">系統默認</span>' : `<button type="button" class="ae-fav-act-btn ae-fav-rename-btn" data-cat-id="${c.id}" title="重命名">✏️</button><button type="button" class="ae-fav-act-btn ae-fav-delete-btn" data-cat-id="${c.id}" title="刪除">🗑️</button>`}</div>
+                    </div>`;
             }).join('');
         };
- 
-        overlay.innerHTML = `
-            <div class="ae-modal-panel ae-fav-manage-panel" role="dialog" aria-modal="true">
-                <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
-                <h2 class="ae-modal-title">管理收藏分類</h2>
-                <div class="ae-fav-manage-list" id="ae-fav-manage-list">${buildList()}</div>
-                <div class="ae-modal-footer" style="display:flex; justify-content:space-between; margin-top:16px;">
-                    <button type="button" id="ae-fav-manage-add-btn" class="ae-modal-btn ae-modal-btn-ghost">新增</button>
-                    <button type="button" id="ae-fav-manage-save-btn" class="ae-modal-btn ae-modal-btn-primary">保存</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(overlay);
- 
-        const close = () => { overlay.remove(); if (typeof onClose === 'function') onClose(); };
-        overlay.querySelector('.ae-modal-close').addEventListener('click', close);
-        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-        const onKey = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
-        document.addEventListener('keydown', onKey);
- 
-        const listEl = overlay.querySelector('#ae-fav-manage-list');
-        listEl.addEventListener('click', e => {
-            const delBtn = e.target.closest('.ae-fav-delete-btn');
-            if (delBtn) {
-                const cId = delBtn.dataset.catId;
-                const d = getFavoritesData();
-                const cat = d.categories.find(c => c.id === cId);
-                const count = Object.values(d.items).filter(arr => arr.includes(cId)).length;
-                if (confirm(`確定要刪除分類「${cat?.name || ''}」嗎？\n將同時刪除該分類下的 ${count} 部收藏。`)) {
-                    deleteFavoriteCategory(cId);
-                    listEl.innerHTML = buildList();
-                }
-                return;
-            }
-            const renBtn = e.target.closest('.ae-fav-rename-btn');
-            if (renBtn) {
-                const cId = renBtn.dataset.catId;
-                const item = listEl.querySelector(`.ae-fav-manage-item[data-cat-id="${cId}"]`);
-                const nameEl = item?.querySelector('.ae-fav-manage-name');
-                if (!nameEl) return;
-                const cur = nameEl.textContent;
-                const input = document.createElement('input');
-                input.type = 'text'; input.value = cur; input.className = 'ae-fav-rename-input';
-                nameEl.replaceWith(input);
-                input.focus(); input.select();
-                const finish = () => {
-                    const n = input.value.trim();
-                    if (n && n !== cur) renameFavoriteCategory(cId, n);
-                    listEl.innerHTML = buildList();
-                };
-                input.addEventListener('blur', finish);
-                input.addEventListener('keydown', ev => {
-                    if (ev.key === 'Enter') { ev.preventDefault(); finish(); }
-                    if (ev.key === 'Escape') { listEl.innerHTML = buildList(); }
+        createBaseModal({
+            id: 'ae-fav-manage-modal', width: 480, title: '管理收藏分類',
+            content: `<div class="ae-fav-manage-list" id="ae-fav-manage-list">${buildList()}</div>`,
+            onActionHTML: `<button type="button" id="ae-fav-manage-add-btn" class="ae-modal-btn ae-modal-btn-ghost">新增</button>
+                           <button type="button" id="ae-fav-manage-save-btn" class="ae-modal-btn ae-modal-btn-primary">保存</button>`,
+            onActionClick: (overlay, close) => {
+                const origClose = close;
+                close = () => { origClose(); if (typeof onClose === 'function') onClose(); };
+                overlay.querySelector('.ae-modal-close').addEventListener('click', close);
+                overlay.querySelector('#ae-fav-manage-save-btn').addEventListener('click', close);
+                const listEl = overlay.querySelector('#ae-fav-manage-list');
+                listEl.addEventListener('click', e => {
+                    const delBtn = e.target.closest('.ae-fav-delete-btn'), renBtn = e.target.closest('.ae-fav-rename-btn');
+                    if (delBtn) {
+                        const cId = delBtn.dataset.catId, d = getFavoritesData(), cat = d.categories.find(c => c.id === cId), count = Object.values(d.items).filter(arr => arr.includes(cId)).length;
+                        if (confirm(`確定要刪除分类「${cat?.name || ''}」嗎？\n將同時刪除該分類下的 ${count} 部收藏。`)) { deleteFavoriteCategory(cId); listEl.innerHTML = buildList(); }
+                    } else if (renBtn) {
+                        const cId = renBtn.dataset.catId, item = listEl.querySelector(`.ae-fav-manage-item[data-cat-id="${cId}"]`), nameEl = item?.querySelector('.ae-fav-manage-name');
+                        if (!nameEl) return;
+                        const cur = nameEl.textContent, input = document.createElement('input'); input.type = 'text'; input.value = cur; input.className = 'ae-fav-rename-input';
+                        nameEl.replaceWith(input); input.focus(); input.select();
+                        const finish = () => { const n = input.value.trim(); if (n && n !== cur) renameFavoriteCategory(cId, n); listEl.innerHTML = buildList(); };
+                        input.addEventListener('blur', finish); input.addEventListener('keydown', ev => { if (ev.key === 'Enter') finish(); if (ev.key === 'Escape') listEl.innerHTML = buildList(); });
+                    }
+                });
+                overlay.querySelector('#ae-fav-manage-add-btn').addEventListener('click', () => {
+                    if (listEl.querySelector('.ae-fav-inline-add')) return;
+                    const addRow = document.createElement('div'); addRow.className = 'ae-fav-manage-item ae-fav-inline-add'; addRow.style.padding = '6px 14px';
+                    addRow.innerHTML = `<input type="text" class="ae-fav-rename-input ae-inline-add-input" placeholder="新增分类名称..." maxlength="30" style="flex:1;">
+                        <div class="ae-fav-manage-actions" style="flex-shrink:0;"><button type="button" class="ae-fav-act-btn ae-fav-confirm-add-btn" title="确认">✓</button><button type="button" class="ae-fav-act-btn ae-fav-cancel-add-btn" title="取消">✗</button></div>`;
+                    listEl.appendChild(addRow); const input = addRow.querySelector('input'); input.focus();
+                    const doAdd = () => { const name = input.value.trim(); if (name) addFavoriteCategory(name); listEl.innerHTML = buildList(); };
+                    addRow.querySelector('.ae-fav-confirm-add-btn').addEventListener('click', doAdd);
+                    addRow.querySelector('.ae-fav-cancel-add-btn').addEventListener('click', () => listEl.innerHTML = buildList());
+                    input.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); if (e.key === 'Escape') listEl.innerHTML = buildList(); });
+                    listEl.scrollTop = listEl.scrollHeight;
                 });
             }
         });
- 
-        overlay.querySelector('#ae-fav-manage-save-btn').addEventListener('click', close);
-        overlay.querySelector('#ae-fav-manage-add-btn').addEventListener('click', () => {
-            const listEl = overlay.querySelector('#ae-fav-manage-list');
-            if (listEl.querySelector('.ae-fav-inline-add')) return;
-            const addRow = document.createElement('div');
-            addRow.className = 'ae-fav-manage-item ae-fav-inline-add';
-            addRow.style.padding = '6px 14px';
-            addRow.innerHTML = `
-                <input type="text" class="ae-fav-rename-input ae-inline-add-input" placeholder="新增分類名稱..." maxlength="30" style="flex:1;">
-                <div class="ae-fav-manage-actions" style="flex-shrink:0;">
-                    <button type="button" class="ae-fav-act-btn ae-fav-confirm-add-btn" title="確認">✓</button>
-                    <button type="button" class="ae-fav-act-btn ae-fav-cancel-add-btn" title="取消">✗</button>
-                </div>
-            `;
-            listEl.appendChild(addRow);
-            const input = addRow.querySelector('input');
-            input.focus();
-            const doInlineAdd = () => {
-                const name = input.value.trim();
-                if (name) addFavoriteCategory(name);
-                listEl.innerHTML = buildList();
-            };
-            addRow.querySelector('.ae-fav-confirm-add-btn').addEventListener('click', doInlineAdd);
-            addRow.querySelector('.ae-fav-cancel-add-btn').addEventListener('click', () => {
-                listEl.innerHTML = buildList();
-            });
-            input.addEventListener('keydown', e => {
-                if (e.key === 'Enter') { e.preventDefault(); doInlineAdd(); }
-                if (e.key === 'Escape') { e.preventDefault(); listEl.innerHTML = buildList(); }
-            });
-            listEl.scrollTop = listEl.scrollHeight;
-        });
     }
- 
+
     const HOMEPAGE_CSS = `
-        .entry-header { display: none !important; }
- 
+        #masthead, .entry-header { display: none !important; }
+
+        /* Jump Ball */
         .ae-page-jump-ball {
-            position: fixed;
-            right: 14px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 9999;
-            width: 44px;
-            height: 44px;
-            padding: 0;
-            border-radius: 999px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            position: fixed; right: 14px; top: 50%; transform: translateY(-50%); z-index: 9999;
+            width: 44px; height: 44px; border-radius: 50%;
             background: radial-gradient(circle at 28% 22%, rgba(196,181,253,0.35), rgba(124,58,237,0.42) 46%, rgba(15,23,42,0.84) 100%);
             border: 1px solid rgba(196,181,253,0.42);
             box-shadow: 0 10px 24px rgba(76,29,149,0.36), inset 0 1px 0 rgba(255,255,255,0.16);
-            backdrop-filter: blur(10px) saturate(1.1);
-            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-        }
-        .ae-page-jump-ball:hover {
-            transform: translateY(-50%) scale(1.04);
-            border-color: rgba(216,180,254,0.7);
-            box-shadow: 0 14px 30px rgba(109,40,217,0.45), inset 0 1px 0 rgba(255,255,255,0.24);
-        }
-        .ae-page-jump-ball:focus-within {
-            border-color: rgba(233,213,255,0.92);
-            box-shadow: 0 0 0 3px rgba(139,92,246,0.24), 0 14px 30px rgba(109,40,217,0.45);
+            backdrop-filter: blur(10px) saturate(1.1); transition: 0.2s;
+            display: flex; align-items: center; justify-content: center;
         }
         .ae-page-jump-input {
-            width: 100% !important;
-            min-width: 0 !important;
-            max-width: none !important;
-            height: 100% !important;
-            line-height: 44px !important;
-            box-sizing: border-box !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            border: none !important;
-            border-radius: 999px !important;
-            background: transparent !important;
-            color: #f8fafc !important;
-            text-align: center !important;
-            font-size: 14px !important;
-            font-weight: 700 !important;
-            letter-spacing: 0.2px !important;
-            text-shadow: 0 1px 2px rgba(15,23,42,0.75);
-            outline: none !important;
-            appearance: textfield;
-            -moz-appearance: textfield;
-            flex: 0 0 auto !important;
+            width: 100% !important; height: 100% !important; border: none !important; background: transparent !important;
+            color: #fff !important; text-align: center !important; font-size: 14px !important; font-weight: 700 !important;
+            outline: none !important; padding: 0 !important; text-shadow: 0 1px 2px rgba(15,23,42,0.75);
         }
-        .ae-page-jump-input::-webkit-outer-spin-button,
-        .ae-page-jump-input::-webkit-inner-spin-button {
-            -webkit-appearance: none;
-            margin: 0;
-        }
-        @media (max-width: 640px) {
-            .ae-page-jump-ball {
-                right: 10px;
-                top: auto;
-                bottom: 120px;
-                transform: none;
-                width: 40px;
-                height: 40px;
-            }
-            .ae-page-jump-ball:hover {
-                transform: scale(1.03);
-            }
-            .ae-page-jump-input {
-                line-height: 40px !important;
-                font-size: 13px !important;
-            }
-        }
- 
+
         /* Loading */
-        .ae-loading {
-            display: flex; flex-direction: column; align-items: center;
-            justify-content: center; padding: 80px 20px; color: rgba(255,255,255,0.5);
-        }
-        .ae-spinner {
-            width: 40px; height: 40px; border: 3px solid rgba(139,92,246,0.2);
-            border-top-color: #a78bfa; border-radius: 50%;
-            animation: ae-spin 0.8s linear infinite; margin-bottom: 16px;
-        }
+        .ae-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 80px 20px; color: var(--ae-text-secondary); }
+        .ae-spinner { width: 40px; height: 40px; border: 3px solid rgba(var(--ae-primary-rgb),0.2); border-top-color: var(--ae-primary); border-radius: 50%; animation: ae-spin 0.8s linear infinite; margin-bottom: 16px; }
         @keyframes ae-spin { to { transform: rotate(360deg); } }
-        .ae-error {
-            text-align: center; padding: 60px 20px; color: rgba(255,255,255,0.5);
-            font-size: 15px;
-        }
- 
-        /* Search */
+
+        /* Search & Filters */
         .ae-search-section { margin-bottom: 28px; }
         .ae-search-wrapper {
-            position: relative; display: flex; align-items: center;
-            background: rgba(255,255,255,0.06);
-            border: 1px solid rgba(139,92,246,0.2);
-            border-radius: 16px; padding: 0 20px;
-            transition: all 0.3s ease; backdrop-filter: blur(12px);
+            display: flex; align-items: center; background: var(--ae-bg-surface); border: 1px solid var(--ae-border-primary);
+            border-radius: 16px; padding: 0 20px; transition: 0.3s; backdrop-filter: blur(12px);
         }
-        .ae-search-wrapper:focus-within {
-            border-color: rgba(139,92,246,0.6);
-            box-shadow: 0 0 0 3px rgba(139,92,246,0.15), 0 8px 32px rgba(139,92,246,0.1);
-            background: rgba(255,255,255,0.1);
-        }
-        .ae-search-icon { width: 20px; height: 20px; color: rgba(139,92,246,0.7); flex-shrink: 0; }
-        #ae-search-input {
-            flex: 1; background: none!important; border: none!important; outline: none!important;
-            padding: 16px 14px!important; font-size: 15px!important; color: inherit!important;
-            font-family: inherit!important;
-        }
-        #ae-search-input::placeholder { color: rgba(255,255,255,0.35); }
-        .ae-search-count {
-            font-size: 13px; color: rgba(255,255,255,0.4); white-space: nowrap;
-            padding-left: 12px; border-left: 1px solid rgba(255,255,255,0.1);
-        }
- 
-        /* Filters */
+        .ae-search-wrapper:focus-within { border-color: rgba(var(--ae-primary-rgb),0.6); box-shadow: 0 0 0 3px rgba(var(--ae-primary-rgb),0.15); background: var(--ae-bg-hover); }
+        .ae-search-icon { width: 20px; color: var(--ae-primary); }
+        #ae-search-input { flex: 1; background: none!important; border: none!important; outline: none!important; padding: 16px 14px!important; font-size: 15px!important; color: inherit!important; font-family: inherit!important; }
+        #ae-search-input::placeholder { color: var(--ae-text-muted); }
+
         .ae-filter-pills { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
-        .ae-season-filters { display: contents; }
         .ae-pill {
-            padding: 7px 18px; border-radius: 20px;
-            border: 1px solid rgba(139,92,246,0.25); background: rgba(139,92,246,0.08);
-            color: rgba(255,255,255,0.7); font-size: 13px; cursor: pointer;
-            transition: all 0.25s ease; font-family: inherit;
+            padding: 7px 18px; border-radius: 20px; border: 1px solid rgba(var(--ae-primary-rgb),0.25);
+            background: rgba(var(--ae-primary-rgb),0.08); color: var(--ae-text-secondary); font-size: 13px; cursor: pointer; transition: 0.25s;
         }
-        .ae-pill[data-filter="continue"] {
-            border-color: rgba(34,197,94,0.46);
-            background: rgba(34,197,94,0.16);
-            color: #bbf7d0;
-        }
-        .ae-pill[data-filter="continue"]:hover:not(.active) {
-            background: rgba(34,197,94,0.26);
-            border-color: rgba(74,222,128,0.75);
-            color: #dcfce7;
-        }
-        .ae-pill:hover { background: rgba(139,92,246,0.2); border-color: rgba(139,92,246,0.4); }
-        .ae-pill.active {
-            background: linear-gradient(135deg, #7c3aed, #a855f7);
-            border-color: transparent; color: #fff; font-weight: 500;
-            box-shadow: 0 4px 15px rgba(139,92,246,0.35);
-        }
-        .ae-pill-season {
-            font-size: 12px; padding: 5px 14px;
-            border-color: rgba(139,92,246,0.15);
-            background: rgba(139,92,246,0.04);
-        }
- 
+        .ae-pill:hover { background: rgba(var(--ae-primary-rgb),0.2); }
+        .ae-pill.active { background: var(--ae-primary-grad); border-color: transparent; color: #fff; box-shadow: 0 4px 15px rgba(var(--ae-primary-rgb),0.35); }
+        .ae-pill[data-filter="continue"] { border-color: rgba(var(--ae-success-rgb),0.46); background: rgba(var(--ae-success-rgb),0.16); color: #bbf7d0; }
+        .ae-pill[data-filter="favorites"] { border-color: rgba(var(--ae-gold-rgb),0.4); background: rgba(var(--ae-gold-rgb),0.1); color: var(--ae-gold); }
+
+        /* Favorites Panel */
+        .ae-fav-panel { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; padding: 10px 14px; background: rgba(var(--ae-gold-rgb),0.06); border: 1px solid rgba(var(--ae-gold-rgb),0.18); border-radius: 12px; }
+        .ae-fav-tabs { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+        .ae-fav-cat-tab { padding: 5px 14px; border-radius: 16px; border: 1px solid rgba(var(--ae-gold-rgb),0.2); background: rgba(var(--ae-gold-rgb),0.06); color: var(--ae-text-secondary); font-size: 12px; cursor: pointer; transition: 0.2s; white-space: nowrap; }
+        .ae-fav-cat-tab:hover { background: rgba(var(--ae-gold-rgb),0.15); }
+        .ae-fav-cat-tab.active { background: var(--ae-gold-grad); color: #fff; border-color: transparent; box-shadow: 0 3px 12px rgba(var(--ae-gold-rgb),0.3); }
+        .ae-fav-manage-btn { padding: 5px 14px; border-radius: 16px; border: 1px solid rgba(148,163,184,0.35); background: rgba(30,41,59,0.5); color: var(--ae-text-secondary); font-size: 12px; cursor: pointer; transition: 0.2s; }
+
         /* Grid */
-        .ae-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-            gap: 20px;
-        }
-        @media (max-width: 640px) {
-            .ae-grid {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 12px;
-            }
-        }
-        @media (min-width: 768px) { .ae-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 22px; } }
-        @media (min-width: 1200px) { .ae-grid { grid-template-columns: repeat(6, 1fr); gap: 24px; } }
- 
+        .ae-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 20px; }
+        @media (max-width: 480px) { .ae-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; } }
+
         /* Card */
         .ae-card {
             display: flex; flex-direction: column; border-radius: 14px; overflow: hidden;
-            background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+            background: var(--ae-bg-surface); border: 1px solid var(--ae-border-light);
             text-decoration: none!important; color: inherit!important;
-            transition: all 0.35s cubic-bezier(0.4,0,0.2,1);
-            animation: ae-fadeUp 0.5s ease forwards; opacity: 0; transform: translateY(20px);
+            transition: 0.35s cubic-bezier(0.4,0,0.2,1); opacity: 0; animation: ae-fadeUp 0.5s ease forwards;
         }
-        @keyframes ae-fadeUp { to { opacity: 1; transform: translateY(0); } }
-        .ae-card:hover {
-            transform: translateY(-6px) scale(1.02);
-            box-shadow: 0 20px 40px rgba(139,92,246,0.2), 0 0 0 1px rgba(139,92,246,0.3);
-            border-color: rgba(139,92,246,0.4);
-        }
- 
-        /* Poster */
-        .ae-card-poster {
-            position: relative; width: 100%; padding-top: 142%; overflow: hidden;
-            background: linear-gradient(145deg, #1a1040, #0d0a1a);
-        }
-        .ae-card-poster-placeholder {
-            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-            display: flex; align-items: center; justify-content: center;
-        }
-        .ae-card-poster-placeholder svg { width: 40px; height: 40px; color: rgba(139,92,246,0.25); }
-        .ae-card-img {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            object-fit: cover; transition: transform 0.5s cubic-bezier(0.4,0,0.2,1), opacity 0.4s ease;
-            opacity: 0;
-        }
+        @keyframes ae-fadeUp { from { transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .ae-card:hover { transform: translateY(-6px) scale(1.02); box-shadow: 0 20px 40px rgba(var(--ae-primary-rgb),0.2); border-color: rgba(var(--ae-primary-rgb),0.4); }
+
+        .ae-card-poster { position: relative; width: 100%; padding-top: 142%; background: linear-gradient(145deg, #1a1040, #0d0a1a); }
+        .ae-card-poster-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 0; }
+        .ae-card-poster-placeholder svg { width: 40px; height: 40px; color: rgba(var(--ae-primary-rgb),0.25); }
+        .ae-card-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: transform 0.5s, opacity 0.4s; z-index: 1; }
         .ae-card-img.ae-loaded { opacity: 1; }
         .ae-card:hover .ae-card-img { transform: scale(1.08); }
-        .ae-card-overlay {
-            position: absolute; bottom: 0; left: 0; right: 0; height: 60%;
-            background: linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 100%);
-            pointer-events: none; opacity: 0; transition: opacity 0.3s ease;
-        }
-        .ae-card:hover .ae-card-overlay { opacity: 1; }
- 
+
         /* Badges */
-        .ae-badge {
-            position: absolute; font-size: 11px; font-weight: 600; padding: 3px 8px;
-            border-radius: 6px; z-index: 2; backdrop-filter: blur(8px); letter-spacing: 0.3px;
-        }
-        .ae-badge-airing {
-            top: 8px; left: 8px; background: rgba(16,185,129,0.85); color: #fff;
-            box-shadow: 0 2px 8px rgba(16,185,129,0.3);
-        }
+        .ae-badge { position: absolute; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px; z-index: 2; backdrop-filter: blur(8px); }
+        .ae-badge-airing { top: 8px; left: 8px; background: rgba(var(--ae-success-rgb),0.85); color: #fff; }
         .ae-badge-done { top: 8px; left: 8px; background: rgba(107,114,128,0.8); color: #e5e7eb; }
-        .ae-badge-ep {
-            left: 8px; right: auto; bottom: 8px; background: rgba(139,92,246,0.85); color: #fff;
-            box-shadow: 0 2px 8px rgba(139,92,246,0.3);
-        }
-        .ae-badge-progress {
-            left: 50%;
-            right: auto;
-            bottom: 34px;
-            transform: translateX(-50%);
-            max-width: calc(100% - 16px);
-            text-align: center;
-            background: rgba(15,23,42,0.72);
-            color: #e2e8f0;
-            border: 1px solid rgba(148,163,184,0.35);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .ae-progress-delete {
-            position: absolute;
-            top: 8px;
-            right: 8px;
-            width: 22px;
-            height: 22px;
-            border-radius: 999px;
-            border: 1px solid rgba(248,113,113,0.6);
-            background: rgba(127,29,29,0.72);
-            color: #fecaca;
-            font-size: 15px;
-            line-height: 1;
-            font-weight: 700;
-            cursor: pointer;
-            z-index: 3;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0;
-            transition: all 0.2s ease;
-        }
-        .ae-progress-delete:hover {
-            background: rgba(185,28,28,0.9);
-            border-color: rgba(252,165,165,0.9);
-            color: #fff;
-        }
-        .ae-card-rating {
-            position: absolute; bottom: 8px; right: 8px;
-            display: flex; align-items: center; gap: 3px;
-            padding: 3px 8px; border-radius: 6px;
-            background: rgba(0,0,0,0.65); color: #fbbf24;
-            font-size: 12px; font-weight: 600; backdrop-filter: blur(8px); z-index: 2;
-        }
-        .ae-card-rating svg { width: 12px; height: 12px; }
- 
-        /* Favorites Pill */
-        .ae-pill[data-filter="favorites"] {
-            border-color: rgba(251,191,36,0.4);
-            background: rgba(251,191,36,0.1);
-            color: #fde68a;
-        }
-        .ae-pill[data-filter="favorites"]:hover:not(.active) {
-            background: rgba(251,191,36,0.2);
-            border-color: rgba(251,191,36,0.65);
-            color: #fef3c7;
-        }
- 
-        /* Favorites Panel */
-        .ae-fav-panel {
-            display: flex; align-items: center; gap: 8px;
-            margin-top: 12px; flex-wrap: wrap;
-            padding: 10px 14px;
-            background: rgba(251,191,36,0.06);
-            border: 1px solid rgba(251,191,36,0.18);
-            border-radius: 12px;
-        }
-        .ae-fav-tabs { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
-        .ae-fav-cat-tab {
-            padding: 5px 14px; border-radius: 16px;
-            border: 1px solid rgba(251,191,36,0.2);
-            background: rgba(251,191,36,0.06);
-            color: rgba(255,255,255,0.7); font-size: 12px;
-            cursor: pointer; transition: all 0.25s ease; font-family: inherit;
-            white-space: nowrap;
-        }
-        .ae-fav-cat-tab:hover { background: rgba(251,191,36,0.15); border-color: rgba(251,191,36,0.4); }
-        .ae-fav-cat-tab.active {
-            background: linear-gradient(135deg, #d97706, #f59e0b);
-            border-color: transparent; color: #fff; font-weight: 500;
-            box-shadow: 0 3px 12px rgba(251,191,36,0.3);
-        }
-        .ae-fav-cat-tab.ae-drag-over {
-            background: rgba(251,191,36,0.35) !important;
-            border-color: #fbbf24 !important;
-            box-shadow: 0 0 0 2px rgba(251,191,36,0.4), 0 4px 16px rgba(251,191,36,0.25) !important;
-            transform: scale(1.05);
-        }
-        .ae-fav-manage-btn {
-            padding: 5px 14px; border-radius: 16px;
-            border: 1px solid rgba(148,163,184,0.35);
-            background: rgba(30,41,59,0.5); color: rgba(226,232,240,0.85);
-            font-size: 12px; cursor: pointer; font-family: inherit;
-            transition: all 0.2s ease; white-space: nowrap;
-        }
-        .ae-fav-manage-btn:hover { background: rgba(51,65,85,0.7); border-color: rgba(196,181,253,0.5); }
- 
-        /* Drag styles */
-        .ae-card.ae-draggable { cursor: grab; }
-        .ae-card.ae-draggable:active { cursor: grabbing; }
-        .ae-card.ae-dragging { opacity: 0.4; transform: scale(0.95); }
- 
-        /* Card Info */
-        .ae-card-info { padding: 12px 12px 14px; }
-        .ae-card-title {
-            font-size: 13.5px!important; font-weight: 600!important; line-height: 1.4!important;
-            margin: 0 0 6px!important; display: -webkit-box; -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical; overflow: hidden; color: rgba(255,255,255,0.92)!important;
-        }
-        .ae-card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-        .ae-meta-tag {
-            font-size: 11px; color: rgba(139,92,246,0.8);
-            background: rgba(139,92,246,0.1); padding: 2px 8px; border-radius: 4px;
-        }
-        .ae-meta-sub { font-size: 11px; color: rgba(255,255,255,0.45); }
- 
-        /* Infinite scroll status */
-        .ae-infinite-status {
-            text-align: center;
-            margin-top: 28px;
-            color: rgba(255,255,255,0.55);
-            font-size: 13px;
-            letter-spacing: 0.2px;
-            min-height: 20px;
-        }
-        .ae-scroll-sentinel {
-            width: 100%;
-            height: 1px;
-            margin-top: 8px;
-            margin-bottom: 24px;
-        }
- 
-        :root.ae-dark #ae-search-input { color: rgba(255,255,255,0.92)!important; }
-        :root.ae-dark #ae-search-input::placeholder { color: rgba(255,255,255,0.4)!important; }
-        :root.ae-dark .ae-search-count { color: rgba(255,255,255,0.55)!important; }
-        :root.ae-dark .ae-pill { color: rgba(255,255,255,0.85)!important; }
-        :root.ae-dark .ae-meta-sub { color: rgba(255,255,255,0.6)!important; }
-        :root.ae-dark .ae-card {
-            background: rgba(255,255,255,0.04)!important;
-            border-color: rgba(255,255,255,0.10)!important;
-            box-shadow: none !important;
-        }
+        .ae-badge-ep { bottom: 8px; left: 8px; background: rgba(var(--ae-primary-rgb),0.85); color: #fff; }
+        .ae-badge-progress { bottom: 34px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 16px); background: rgba(15,23,42,0.72); border: 1px solid rgba(148,163,184,0.35); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e8f0; }
+
+        /* Deletions */
+        .ae-progress-delete { position: absolute; top: 8px; right: 8px; width: 22px; height: 22px; border-radius: 50%; border: 1px solid rgba(var(--ae-danger-rgb),0.6); background: rgba(var(--ae-danger-rgb),0.72); color: #fff; display: inline-flex; align-items: center; justify-content: center; z-index: 3; transition: 0.2s; padding: 0; cursor: pointer; }
+        .ae-progress-delete:hover { background: rgba(var(--ae-danger-rgb),0.9); }
+
+        .ae-card-info { padding: 12px; }
+        .ae-card-title { font-size: 13.5px!important; font-weight: 600!important; margin: 0 0 6px!important; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--ae-text-primary)!important; }
+        .ae-card-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+        .ae-meta-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: rgba(var(--ae-primary-rgb),0.1); color: rgba(var(--ae-primary-rgb),0.8); }
+
+        /* Dark mode generic overrides */
+        :root.ae-dark #ae-search-input { color: var(--ae-text-primary)!important; }
+        :root.ae-dark .ae-card { background: var(--ae-bg-surface)!important; border-color: var(--ae-border-light)!important; }
     `;
- 
+
     // ===================== PLAY PAGE =====================
- 
+
     // Detect category archive page (the old "play page")
     function isCategoryPlayPage() {
         return document.body.classList.contains('archive') &&
             document.body.classList.contains('category') &&
             document.querySelectorAll('article').length > 0;
     }
- 
+
     // Detect single post page (独立播放页, e.g. https://anime1.me/28432)
     function isSinglePostPage() {
         return document.body.classList.contains('single') &&
             document.body.classList.contains('single-post') &&
             !!document.querySelector('#main > article .vjscontainer');
     }
- 
+
     function isPlayPage() {
         return isCategoryPlayPage() || isSinglePostPage();
     }
- 
+
     // Extract post ID from a single post page URL like https://anime1.me/28432
     function extractPostIdFromUrl(url) {
         const m = String(url || '').match(/anime1\.me\/(\d+)/);
         return m ? m[1] : null;
     }
- 
+
     // Extract category ID from a single post page's article element
     function getCategoryIdFromArticle(articleEl) {
         if (!articleEl) return null;
@@ -2189,7 +1502,7 @@
         }
         return null;
     }
- 
+
     // Fetch a single page HTML and parse articles from it
     function fetchPageArticles(url) {
         return new Promise(resolve => {
@@ -2225,7 +1538,7 @@
             });
         });
     }
- 
+
     // Fetch all episodes from a category, handling pagination
     async function fetchAllCategoryEpisodes(catId) {
         const allEps = [];
@@ -2245,7 +1558,7 @@
         allEps.reverse();
         return allEps;
     }
- 
+
     // Get anime title from single post page (strip episode number suffix)
     function getAnimeTitleFromSinglePost() {
         // Try the category tag in the footer of the article
@@ -2255,16 +1568,16 @@
         const pageTitle = document.title.replace(/\s*–\s*Anime1\.me.*$/i, '').trim();
         return pageTitle.replace(/\s*\[\d+\]\s*$/, '').trim();
     }
- 
+
     // ---- Category page redirect logic ----
     function handleCategoryPageRedirect() {
         const articles = [...document.querySelectorAll('#main > article')];
         if (articles.length === 0) return;
- 
+
         const catId = getCurrentCategoryId();
         const pageTitle = document.querySelector('.page-header .page-title')?.textContent?.trim() || '';
         const storedProgress = getWatchProgressForAnime({ catId, name: pageTitle });
- 
+
         // If we have stored progress, redirect immediately
         if (storedProgress && storedProgress.postUrl) {
             const postId = extractPostIdFromUrl(storedProgress.postUrl);
@@ -2273,7 +1586,7 @@
                 return;
             }
         }
- 
+
         // No stored progress — need to find episode 1.
         // Show a loading overlay while we fetch all episode pages.
         const overlay = document.createElement('div');
@@ -2317,7 +1630,7 @@
             <div class="ap-loading-sub">正在獲取完整選集列表</div>
         `;
         document.body.appendChild(overlay);
- 
+
         // Fetch all episodes from the category (handles pagination automatically)
         fetchAllCategoryEpisodes(catId).then(episodes => {
             if (episodes.length > 0) {
@@ -2337,7 +1650,7 @@
             }
         });
     }
- 
+
     // ---- Single post page enhancement ----
     function enhancePlayPage() {
         // If on category page, redirect to single post page
@@ -2345,30 +1658,30 @@
             handleCategoryPageRedirect();
             return;
         }
- 
+
         // We are on a single post page
         const article = document.querySelector('#main > article');
         if (!article) return;
- 
+
         injectCSS(PLAYPAGE_CSS);
- 
+
         const vjsContainer = article.querySelector('.vjscontainer');
         const catId = getCategoryIdFromArticle(article);
         const currentPostId = extractPostIdFromUrl(location.href);
         const currentPostUrl = currentPostId ? `https://anime1.me/${currentPostId}` : location.href;
- 
+
         // Parse current episode info from the article
         const entryTitle = article.querySelector('.entry-title')?.textContent?.trim() || '';
         const currentEpMatch = entryTitle.match(/\[(\d+)\]/);
         const currentEpNum = currentEpMatch ? parseInt(currentEpMatch[1]) : null;
- 
+
         const animeName = getAnimeTitleFromSinglePost();
         const playCatId = catId || getCurrentCategoryId();
- 
+
         // Hide original article content but keep comments
         article.style.display = 'none';
         document.querySelectorAll('#main > #ad-1, #main > #ad-2').forEach(el => el.style.display = 'none');
- 
+
         // Full width layout
         const secondary = document.querySelector('#secondary');
         if (secondary) secondary.style.display = 'none';
@@ -2376,14 +1689,14 @@
         if (primaryDiv) primaryDiv.style.cssText = 'width:100%!important;max-width:1100px!important;margin:0 auto!important;float:none!important;';
         const siteContent = document.querySelector('.site-content');
         if (siteContent) siteContent.style.cssText = 'max-width:1200px!important;margin:0 auto!important;padding:0!important;';
- 
+
         // Move play title/info into site header
         const headerHost = document.querySelector('#masthead .header-content') || document.querySelector('#masthead');
         if (headerHost) {
             // Hide default site title
             const siteBranding = headerHost.querySelector('#site-branding');
             if (siteBranding) siteBranding.style.display = 'none';
- 
+
             let playHeader = headerHost.querySelector('#ap-play-header-panel');
             if (!playHeader) {
                 playHeader = document.createElement('div');
@@ -2406,7 +1719,7 @@
                 headerHost.appendChild(playHeader);
             }
         }
- 
+
         // Build player UI
         const main = document.getElementById('main');
         const section = document.createElement('div');
@@ -2443,7 +1756,7 @@
             </div>
         `;
         main.insertBefore(section, main.firstChild);
- 
+
         const favBtn = document.getElementById('ap-fav-btn');
         if (favBtn && playCatId) {
             favBtn.addEventListener('click', (e) => {
@@ -2459,19 +1772,19 @@
                 }
             });
         }
- 
+
         // Mount current episode's player
         const wrapper = document.getElementById('ap-video-wrapper');
         if (vjsContainer) {
             vjsContainer.style.display = '';
             wrapper.appendChild(vjsContainer);
         }
- 
+
         // Web fullscreen
         let webFullscreenActive = false;
         let webFullscreenShortcutBound = false;
         const WEB_FULLSCREEN_CLASS = 'ae-web-fullscreen';
- 
+
         function syncWebFullscreenButtons() {
             document.querySelectorAll('.ae-webfs-btn').forEach((btn) => {
                 const active = !!webFullscreenActive;
@@ -2488,14 +1801,14 @@
                 }
             });
         }
- 
+
         function setWebFullscreen(active) {
             webFullscreenActive = !!active;
             document.documentElement.classList.toggle(WEB_FULLSCREEN_CLASS, webFullscreenActive);
             document.body.classList.toggle(WEB_FULLSCREEN_CLASS, webFullscreenActive);
             syncWebFullscreenButtons();
         }
- 
+
         function ensureWebFullscreenControl(container) {
             const controlBar = container?.querySelector('.vjs-control-bar');
             if (!controlBar) return;
@@ -2520,7 +1833,7 @@
             }
             syncWebFullscreenButtons();
         }
- 
+
         function bindWebFullscreenShortcut() {
             if (webFullscreenShortcutBound) return;
             const onKeydown = (e) => {
@@ -2544,19 +1857,19 @@
             document.addEventListener('keydown', onKeydown);
             webFullscreenShortcutBound = true;
         }
- 
+
         // Apply web fullscreen control and poster to current player
         if (vjsContainer) {
             ensureWebFullscreenControl(vjsContainer);
         }
         bindWebFullscreenShortcut();
- 
+
         // Progress tracking for current video
         let trackedVideo = null;
         let saveHandlers = null;
         let lastProgressSaveAt = 0;
         let lastProgressSec = -1;
- 
+
         function persistPlaybackProgress(force = false) {
             const video = vjsContainer?.querySelector('video');
             if (!video) return;
@@ -2580,7 +1893,7 @@
             lastProgressSaveAt = now;
             lastProgressSec = sec;
         }
- 
+
         function bindVideoProgress(video) {
             if (!video || trackedVideo === video) return;
             if (trackedVideo && saveHandlers) {
@@ -2601,7 +1914,7 @@
             video.addEventListener('ended', saveHandlers.onEnded);
             video.addEventListener('seeking', saveHandlers.onSeeking);
         }
- 
+
         function restorePlaybackTime(video, seconds) {
             if (!video || !Number.isFinite(seconds) || seconds <= 1) return;
             const seek = () => {
@@ -2616,7 +1929,7 @@
                 video.addEventListener('loadedmetadata', seek, { once: true });
             }
         }
- 
+
         // Bind progress tracking and restore playback position
         const videoEl = vjsContainer?.querySelector('video');
         if (videoEl) {
@@ -2626,7 +1939,7 @@
                 restorePlaybackTime(videoEl, storedProgress.positionSec);
             }
         }
- 
+
         // Save initial progress record
         saveWatchProgress({
             catId: playCatId,
@@ -2635,12 +1948,12 @@
             epTitle: entryTitle,
             postUrl: currentPostUrl
         });
- 
+
         window.addEventListener('beforeunload', () => persistPlaybackProgress(true));
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') persistPlaybackProgress(true);
         });
- 
+
         // Scroll player into view
         requestAnimationFrame(() => {
             setTimeout(() => {
@@ -2651,7 +1964,7 @@
                 window.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
             }, 60);
         });
- 
+
         // Make comments section visible and styled
         const commentsSection = document.getElementById('comments') || document.querySelector('.comments-area');
         if (commentsSection) {
@@ -2663,7 +1976,7 @@
                 playerSection.parentElement.insertBefore(commentsSection, playerSection.nextSibling);
             }
         }
- 
+
         // Fetch TMDB banner/poster
         let playPoster = null;
         if (animeName) {
@@ -2680,22 +1993,22 @@
                 }
             });
         }
- 
+
         // ---- Fetch all episodes from category in background ----
         if (playCatId) {
             fetchAllCategoryEpisodes(playCatId).then(episodes => {
                 const epGrid = document.getElementById('ap-ep-grid');
                 const epCount = document.getElementById('ap-ep-count');
                 if (!epGrid) return;
- 
+
                 epGrid.innerHTML = '';
                 if (epCount) epCount.textContent = `共 ${episodes.length} 集`;
- 
+
                 episodes.forEach((ep) => {
                     const isCurrent = ep.postUrl === currentPostUrl ||
                         (ep.postId && ep.postId === currentPostId) ||
                         (Number.isFinite(ep.epNum) && ep.epNum === currentEpNum);
- 
+
                     const btn = document.createElement('button');
                     btn.className = 'ap-ep-btn' + (isCurrent ? ' active' : '');
                     btn.textContent = Number.isFinite(ep.epNum) ? String(ep.epNum).padStart(2, '0') : '??';
@@ -2709,7 +2022,7 @@
                     });
                     epGrid.appendChild(btn);
                 });
- 
+
                 // Scroll active button into view
                 const activeBtn = epGrid.querySelector('.ap-ep-btn.active');
                 if (activeBtn) {
@@ -2720,411 +2033,127 @@
             });
         }
     }
- 
+
     const PLAYPAGE_CSS = `
-        html.ae-web-fullscreen,
-        body.ae-web-fullscreen {
-            overflow: hidden !important;
-        }
-        body.ae-web-fullscreen #masthead,
-        body.ae-web-fullscreen #colophon {
-            display: none !important;
-        }
-        body.ae-web-fullscreen .ap-player-section {
-            position: fixed !important;
-            inset: 0 !important;
-            z-index: 2147483000 !important;
-            margin: 0 !important;
-            width: 100vw !important;
-            max-width: none !important;
-            background: #000 !important;
-        }
-        body.ae-web-fullscreen .ap-main-layout,
-        body.ae-web-fullscreen .ap-player-column,
-        body.ae-web-fullscreen .ap-content-row,
-        body.ae-web-fullscreen .ap-left-stack {
-            height: 100% !important;
-            min-height: 0 !important;
-            background: #000 !important;
-            border: none !important;
-            border-radius: 0 !important;
-        }
-        body.ae-web-fullscreen .ap-episode-section {
-            display: none !important;
-        }
-        body.ae-web-fullscreen #ap-video-wrapper {
+        #masthead {
             position: relative !important;
-            width: 100% !important;
-            height: 100vh !important;
-            background: #000 !important;
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%) !important;
+            box-shadow: 0 4px 30px rgba(0,0,0,0.3) !important;
+            border-bottom: 1px solid var(--ae-border-primary) !important;
         }
-        body.ae-web-fullscreen #ap-video-wrapper::before {
-            display: none !important;
-        }
-        body.ae-web-fullscreen #ap-video-wrapper .vjscontainer,
-        body.ae-web-fullscreen #ap-video-wrapper .video-js,
-        body.ae-web-fullscreen #ap-video-wrapper .video-js .vjs-tech,
-        body.ae-web-fullscreen #ap-video-wrapper .video-js video {
-            position: absolute !important;
-            inset: 0 !important;
-            width: 100% !important;
-            height: 100% !important;
-            background: #000 !important;
-        }
- 
+        #masthead .header-content { padding: 8px 14px !important; min-height: 56px !important; }
+
+        /* Web Fullscreen */
+        html.ae-web-fullscreen, body.ae-web-fullscreen { overflow: hidden !important; }
+        body.ae-web-fullscreen #masthead, body.ae-web-fullscreen #colophon { display: none !important; }
+        body.ae-web-fullscreen .ap-player-section { position: fixed !important; inset: 0 !important; z-index: 2147483000 !important; margin: 0 !important; width: 100vw !important; max-width: none !important; background: #000 !important; }
+        body.ae-web-fullscreen .ap-main-layout, body.ae-web-fullscreen .ap-player-column, body.ae-web-fullscreen .ap-content-row, body.ae-web-fullscreen .ap-left-stack { height: 100% !important; min-height: 0 !important; background: #000 !important; border: none !important; border-radius: 0 !important; }
+        body.ae-web-fullscreen .ap-episode-section { display: none !important; }
+        body.ae-web-fullscreen #ap-video-wrapper { position: relative !important; width: 100% !important; height: 100vh !important; background: #000 !important; }
+        body.ae-web-fullscreen #ap-video-wrapper::before { display: none !important; }
+        body.ae-web-fullscreen #ap-video-wrapper .vjscontainer, body.ae-web-fullscreen #ap-video-wrapper .video-js, body.ae-web-fullscreen #ap-video-wrapper .video-js .vjs-tech, body.ae-web-fullscreen #ap-video-wrapper .video-js video { position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; background: #000 !important; }
+
         .page-header { display: none !important; }
- 
-        body.archive.category,
-        body.archive.category #page,
-        body.archive.category #content,
-        body.archive.category .site-content,
-        body.archive.category #primary,
-        body.archive.category #main,
-        body.archive.category #colophon {
-            background: #0b0b16 !important;
-        }
-        body.archive.category #colophon .scroll-top {
-            display: none !important;
-        }
- 
-        .ap-player-section {
-            margin: 0 auto;
-            max-width: 100%;
-            display: block !important;
-            clear: both !important;
-            position: relative !important;
-            z-index: 1 !important;
-        }
-        .ap-main-layout {
-            display: block;
-        }
-        body.archive.category #masthead .site-title,
-        body.archive.category #masthead #site-branding {
-            display: none !important;
-        }
-        body.archive.category #masthead .header-content {
-            padding: 10px 16px !important;
-            min-height: auto !important;
-            display: flex !important;
-            align-items: center !important;
-        }
-        #ap-play-header-panel {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 14px;
-            width: 100%;
-            padding: 0;
-            border: none;
-            border-radius: 0;
-            background: transparent;
-            box-shadow: none;
-            min-height: 38px;
-            padding-right: 0;
-        }
-        .ap-header-main {
-            min-width: 0;
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-        .ap-player-column {
-            min-width: 0;
-            background: rgba(15,12,41,0.68);
-            border: 1px solid rgba(139,92,246,0.2);
-            border-radius: 0 0 12px 12px;
-            backdrop-filter: blur(12px);
-            overflow: hidden;
-        }
-        .ap-content-row {
-            display: flex;
-            flex-direction: column;
-            min-height: 100%;
-        }
-        .ap-left-stack {
-            min-width: 0;
-        }
- 
-        /* Prevent nested scroll containers from site/theme CSS on play page */
-        html, body, #page, #content, .site-content, #primary, #main {
-            overflow-x: hidden !important;
-        }
-        #content, .site-content, #primary, #main {
-            overflow-y: visible !important;
-            height: auto !important;
-            max-height: none !important;
-        }
- 
-        .ap-anime-title {
-            font-size: 22px!important; font-weight: 700!important; margin: 0!important;
-            color: #e9ddff !important;
-            line-height: 1.3!important;
-            max-width: 100%;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        @supports (-webkit-background-clip: text) {
-            .ap-anime-title {
-                background: linear-gradient(135deg, #e2d9f3, #c084fc);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-            }
-        }
+
+        /* Play Page Layout Resets */
+        body.archive.category, body.archive.category #page, body.archive.category #content, body.archive.category .site-content, body.archive.category #primary, body.archive.category #main, body.archive.category #colophon { background: var(--ae-bg-base) !important; }
+        body.archive.category #colophon .scroll-top { display: none !important; }
+        .ap-player-section { margin: 0 auto; max-width: 100%; display: block !important; clear: both !important; position: relative !important; z-index: 1 !important; }
+        .ap-main-layout { display: block; }
+        body.archive.category #masthead .site-title, body.archive.category #masthead #site-branding { display: none !important; }
+        body.archive.category #masthead .header-content { padding: 10px 16px !important; min-height: auto !important; display: flex !important; align-items: center !important; }
+
+        /* Header Panel */
+        #ap-play-header-panel { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; padding: 0; min-height: 38px; }
+        .ap-header-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+        .ap-player-column { min-width: 0; background: var(--ae-bg-panel); border: 1px solid var(--ae-border-primary); border-radius: 0 0 12px 12px; backdrop-filter: blur(12px); overflow: hidden; }
+        .ap-content-row { display: flex; flex-direction: column; min-height: 100%; }
+        .ap-left-stack { min-width: 0; }
+
+        /* Prevent nested scroll containers */
+        html, body, #page, #content, .site-content, #primary, #main { overflow-x: hidden !important; }
+        #content, .site-content, #primary, #main { overflow-y: visible !important; height: auto !important; max-height: none !important; }
+
+        .ap-anime-title { font-size: 22px!important; font-weight: 700!important; margin: 0!important; color: var(--ae-text-primary)!important; line-height: 1.3!important; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        @supports (-webkit-background-clip: text) { .ap-anime-title { background: var(--ae-primary-grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent; } }
         .ap-now-playing { display: flex; align-items: center; gap: 8px; }
-        .ap-now-label {
-            font-size: 12px; padding: 3px 10px;
-            background: rgba(139,92,246,0.2); border-radius: 999px; color: #ddd6fe; font-weight: 500;
-            border: 1px solid rgba(167,139,250,0.35);
-        }
-        .ap-now-ep { font-size: 14px; color: rgba(255,255,255,0.75); }
-        .ap-back-link {
-            display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border-radius: 999px;
-            height: 34px; box-sizing: border-box;
-            background: rgba(15,23,42,0.38); border: 1px solid rgba(148,163,184,0.36);
-            color: #e2e8f0!important; text-decoration: none!important; font-size: 13px;
-            transition: all 0.25s ease; white-space: nowrap;
-        }
-        .ap-back-link:hover { background: rgba(51,65,85,0.65); border-color: rgba(196,181,253,0.55); }
- 
-        .ap-header-actions {
-            display: flex; align-items: center; gap: 10px; flex-shrink: 0;
-        }
-        .ap-fav-btn {
-            position: static; height: 32px; padding: 0 12px;
-            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-            border-radius: 999px; background: rgba(15,23,42,0.38); border: 1px solid rgba(148,163,184,0.36);
-            color: #e2e8f0; cursor: pointer; font-size: 13px; font-family: inherit; transition: all 0.25s ease;
-        }
-        .ap-fav-btn:hover { background: rgba(51,65,85,0.65); border-color: rgba(196,181,253,0.55); color: #fbbf24; }
-        .ap-fav-btn.is-favorited { color: #fbbf24; background: rgba(251,191,36,0.15); border-color: rgba(251,191,36,0.35); }
-        .ap-fav-btn.is-favorited:hover { background: rgba(251,191,36,0.25); border-color: rgba(251,191,36,0.5); }
+        .ap-now-label { font-size: 12px; padding: 3px 10px; background: rgba(var(--ae-primary-rgb),0.2); border-radius: 999px; color: var(--ae-primary); font-weight: 500; border: 1px solid var(--ae-border-primary); }
+        .ap-now-ep { font-size: 14px; color: var(--ae-text-secondary); }
+        .ap-back-link { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border-radius: 999px; height: 34px; box-sizing: border-box; background: var(--ae-bg-input); border: 1px solid var(--ae-border-light); color: var(--ae-text-primary)!important; text-decoration: none!important; font-size: 13px; transition: all 0.25s ease; white-space: nowrap; }
+        .ap-back-link:hover { background: var(--ae-bg-hover); border-color: var(--ae-primary); }
+
+        .ap-header-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+        .ap-fav-btn { position: static; height: 32px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 999px; background: var(--ae-bg-input); border: 1px solid var(--ae-border-light); color: var(--ae-text-primary); cursor: pointer; font-size: 13px; font-family: inherit; transition: all 0.25s ease; }
+        .ap-fav-btn:hover { background: var(--ae-bg-hover); border-color: rgba(var(--ae-primary-rgb),0.55); color: var(--ae-gold); }
+        .ap-fav-btn.is-favorited { color: var(--ae-gold); background: rgba(var(--ae-gold-rgb),0.15); border-color: rgba(var(--ae-gold-rgb),0.35); }
+        .ap-fav-btn.is-favorited:hover { background: rgba(var(--ae-gold-rgb),0.25); border-color: rgba(var(--ae-gold-rgb),0.5); }
         .ap-fav-btn svg { fill: none; stroke: currentColor; stroke-width: 1.8; transition: all 0.25s ease; width: 14px; height: 14px; }
-        .ap-fav-btn.is-favorited svg { fill: currentColor; }
- 
-        .ap-video-wrapper {
-            background: #000;
-            position: relative !important;
-            overflow: hidden !important;
-            width: 100% !important;
-            border-radius: 0 !important;
-        }
-        .ap-video-wrapper::before {
-            content: '';
-            display: block;
-            width: 100%;
-            padding-top: 56.25%; /* 16:9 */
-        }
-        .ap-video-wrapper .vjscontainer {
-            position: absolute !important;
-            inset: 0 !important;
-            width: 100% !important;
-            height: 100% !important;
-            display: block !important;
-            max-width: none !important;
-            overflow: hidden !important;
-        }
-        .ap-video-wrapper .video-js {
-            display: block !important;
-            width: 100% !important;
-            height: 100% !important;
-            max-width: none !important;
-        }
-        .ap-video-wrapper .video-js.vjs-fluid {
-            padding-top: 0 !important;
-        }
-        .ap-video-wrapper .video-js:not(.vjs-fluid),
-        .ap-video-wrapper .video-js .vjs-tech,
-        .ap-video-wrapper .video-js video {
-            width: 100% !important;
-            height: 100% !important;
-        }
-        .ap-video-wrapper .video-js .vjs-control-bar {
-            z-index: 30 !important;
-        }
-        .vjs-webfs-control {
-            width: 3em !important;
-            min-width: 3em !important;
-            padding: 0 !important;
-        }
-        .vjs-webfs-control .vjs-control-text {
-            position: absolute !important;
-            width: 1px !important;
-            height: 1px !important;
-            padding: 0 !important;
-            margin: -1px !important;
-            overflow: hidden !important;
-            clip: rect(0,0,0,0) !important;
-            white-space: nowrap !important;
-            border: 0 !important;
-        }
-        .vjs-webfs-control .ae-webfs-icon {
-            width: 15px;
-            height: 15px;
-            display: block;
-            margin: 0 auto;
-            color: rgba(255,255,255,0.92);
-            pointer-events: none;
-            transition: color 0.2s ease;
-        }
-        .vjs-webfs-control .ae-webfs-icon path {
-            fill: none;
-            stroke: currentColor;
-            stroke-width: 2;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-        }
-        .vjs-webfs-control .ae-webfs-icon .ae-webfs-dot {
-            fill: currentColor;
-            opacity: 0.9;
-        }
-        .ae-webfs-btn.is-active .ae-webfs-icon {
-            color: #c4b5fd;
-        }
- 
-        .ap-episode-section {
-            width: 100%;
-            padding: 20px 24px 28px;
-            background: rgba(15,12,41,0.6);
-            border-left: none;
-            border-top: 1px solid rgba(139,92,246,0.2);
-            border-right: none;
-            border-bottom: none;
-            border-radius: 0;
-            position: static !important;
-            overflow: visible !important;
-            z-index: auto !important;
-            margin-top: 0 !important;
-            max-height: none;
-            overflow-y: visible !important;
-        }
-        .ap-ep-header {
-            display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;
-        }
-        .ap-ep-title {
-            display: flex; align-items: center; gap: 8px;
-            font-size: 16px!important; font-weight: 600!important; color: rgba(255,255,255,0.9)!important; margin: 0!important;
-        }
-        .ap-ep-title svg { color: #a78bfa; }
-        .ap-ep-count { font-size: 13px; color: rgba(255,255,255,0.4); }
- 
-        .ap-ep-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
-            gap: 8px;
-        }
-        .ap-ep-loading {
-            grid-column: 1 / -1;
-            text-align: center;
-            padding: 20px;
-            color: rgba(255,255,255,0.5);
-            font-size: 14px;
-            animation: ap-pulse 1.5s ease-in-out infinite;
-        }
-        @keyframes ap-pulse {
-            0%, 100% { opacity: 0.4; }
-            50% { opacity: 1; }
-        }
-        .ap-ep-btn {
-            width: 100%;
-            min-width: 0;
-            height: 40px; display: flex; align-items: center; justify-content: center;
-            border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);
-            background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.7);
-            cursor: pointer; transition: all 0.25s ease; font-family: inherit;
-            padding: 0 12px; font-size: 14px; font-weight: 500;
-        }
-        .ap-ep-btn:hover:not(.active) { background: rgba(139,92,246,0.15); border-color: rgba(139,92,246,0.35); transform: translateY(-2px); }
-        .ap-ep-btn.active {
-            background: linear-gradient(135deg, #7c3aed, #a855f7);
-            border-color: transparent; color: #fff; font-weight: 600;
-            box-shadow: 0 4px 15px rgba(139,92,246,0.4); transform: scale(1.05);
-            cursor: default;
-        }
- 
-        /* Comments section styling on single post page */
-        .single-post .comments-area {
-            max-width: 1100px;
-            margin: 20px auto;
-            padding: 0 16px;
-        }
- 
+        .ap-fav-btn.is-favorited svg { fill: currentColor; stroke: currentColor; }
+
+        /* Video Wrapper */
+        .ap-video-wrapper { background: #000; position: relative !important; overflow: hidden !important; width: 100% !important; border-radius: 0 !important; }
+        .ap-video-wrapper::before { content: ''; display: block; width: 100%; padding-top: 56.25%; }
+        .ap-video-wrapper .vjscontainer { position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; display: block !important; max-width: none !important; overflow: hidden !important; }
+        .ap-video-wrapper .video-js { display: block !important; width: 100% !important; height: 100% !important; max-width: none !important; }
+        .ap-video-wrapper .video-js.vjs-fluid { padding-top: 0 !important; }
+        .ap-video-wrapper .video-js:not(.vjs-fluid), .ap-video-wrapper .video-js .vjs-tech, .ap-video-wrapper .video-js video { width: 100% !important; height: 100% !important; }
+        .ap-video-wrapper .video-js .vjs-control-bar { z-index: 30 !important; }
+        .vjs-webfs-control { width: 3em !important; min-width: 3em !important; padding: 0 !important; }
+        .vjs-webfs-control .vjs-control-text { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0,0,0,0) !important; white-space: nowrap !important; border: 0 !important; }
+        .vjs-webfs-control .ae-webfs-icon { width: 15px; height: 15px; display: block; margin: 0 auto; color: var(--ae-text-primary); pointer-events: none; transition: 0.2s ease; }
+        .vjs-webfs-control .ae-webfs-icon path { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+        .vjs-webfs-control .ae-webfs-icon .ae-webfs-dot { fill: currentColor; opacity: 0.9; }
+        .ae-webfs-btn.is-active .ae-webfs-icon { color: var(--ae-primary); }
+
+        /* Episode Section */
+        .ap-episode-section { width: 100%; padding: 20px 24px 28px; background: rgba(15,12,41,0.6); border-top: 1px solid var(--ae-border-primary); position: static !important; overflow: visible !important; z-index: auto !important; margin-top: 0 !important; max-height: none; overflow-y: visible !important; }
+        .ap-ep-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+        .ap-ep-title { display: flex; align-items: center; gap: 8px; font-size: 16px!important; font-weight: 600!important; color: var(--ae-text-primary)!important; margin: 0!important; }
+        .ap-ep-title svg { color: var(--ae-primary); }
+        .ap-ep-count { font-size: 13px; color: var(--ae-text-muted); }
+
+        .ap-ep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 8px; }
+        .ap-ep-loading { grid-column: 1 / -1; text-align: center; padding: 20px; color: var(--ae-text-muted); font-size: 14px; animation: ap-pulse 1.5s ease-in-out infinite; }
+        @keyframes ap-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+        .ap-ep-btn { width: 100%; min-width: 0; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 10px; border: 1px solid var(--ae-border-light); background: var(--ae-bg-surface); color: var(--ae-text-secondary); cursor: pointer; transition: 0.25s ease; font-family: inherit; padding: 0 12px; font-size: 14px; font-weight: 500; }
+        .ap-ep-btn:hover:not(.active) { background: rgba(var(--ae-primary-rgb),0.15); border-color: rgba(var(--ae-primary-rgb),0.35); transform: translateY(-2px); }
+        .ap-ep-btn.active { background: var(--ae-primary-grad); border-color: transparent; color: #fff; font-weight: 600; box-shadow: 0 4px 15px rgba(var(--ae-primary-rgb),0.4); transform: scale(1.05); cursor: default; }
+
+        /* Comments */
+        .single-post .comments-area { max-width: 1100px; margin: 20px auto; padding: 0 16px; }
+
         @media (max-width: 1024px) {
-            .ap-video-wrapper {
-                border-radius: 0;
-            }
-            .ap-episode-section {
-                border-radius: 0;
-            }
-            .ap-ep-grid {
-                grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
-            }
+            .ap-video-wrapper, .ap-episode-section { border-radius: 0; }
+            .ap-ep-grid { grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); }
         }
- 
+
         @media (max-width: 640px) {
-            body.archive.category,
-            body.archive.category #page,
-            body.archive.category #content,
-            body.archive.category .site-content,
-            body.archive.category #primary,
-            body.archive.category #main,
-            body.archive.category .ap-player-section,
-            body.archive.category .ap-main-layout,
-            body.archive.category .ap-player-column,
-            body.single.single-post,
-            body.single.single-post #page,
-            body.single.single-post #content,
-            body.single.single-post .site-content,
-            body.single.single-post #primary,
-            body.single.single-post #main,
-            body.single.single-post .ap-player-section,
-            body.single.single-post .ap-main-layout,
-            body.single.single-post .ap-player-column {
-                width: 100% !important;
-                max-width: 100% !important;
-                margin-left: 0 !important;
-                margin-right: 0 !important;
-                padding-left: 0 !important;
-                padding-right: 0 !important;
+            body.archive.category, body.archive.category #page, body.archive.category #content, body.archive.category .site-content, body.archive.category #primary, body.archive.category #main, body.archive.category .ap-player-section, body.archive.category .ap-main-layout, body.archive.category .ap-player-column,
+            body.single.single-post, body.single.single-post #page, body.single.single-post #content, body.single.single-post .site-content, body.single.single-post #primary, body.single.single-post #main, body.single.single-post .ap-player-section, body.single.single-post .ap-main-layout, body.single.single-post .ap-player-column {
+                width: 100% !important; max-width: 100% !important; margin-left: 0 !important; margin-right: 0 !important; padding-left: 0 !important; padding-right: 0 !important;
             }
-            body.archive.category .site-content,
-            body.single.single-post .site-content {
-                padding-left: 0 !important;
-                padding-right: 0 !important;
-            }
-            .ap-title-bar {
-                display: none !important;
-            }
-            .ap-player-column {
-                border-left: none !important;
-                border-right: none !important;
-                border-radius: 0 !important;
-            }
-            #ap-play-header-panel {
-                border-radius: 0 !important;
-                padding: 0;
-                padding-right: 0;
-            }
+            body.archive.category .site-content, body.single.single-post .site-content { padding-left: 0 !important; padding-right: 0 !important; }
+            .ap-title-bar { display: none !important; }
+            .ap-player-column { border-left: none !important; border-right: none !important; border-radius: 0 !important; }
+            #ap-play-header-panel { border-radius: 0 !important; padding: 0; padding-right: 0; }
             .ap-anime-title { font-size: 18px!important; }
             .ap-episode-section { padding: 14px 16px 20px; }
-            .ap-ep-grid {
-                grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
-            }
+            .ap-ep-grid { grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); }
             .ap-ep-btn { height: 36px; font-size: 13px; }
             .single-post .comments-area { padding: 0 8px; }
         }
     `;
- 
+
     // ===================== INIT =====================
     mountSettingsFloatingButton();
     setTimeout(mountSettingsFloatingButton, 120);
     initForcedDarkMode();
     maybeShowApiSetupHint();
- 
+
     if (isHomePage()) {
         enhanceHomePage();
     } else if (isPlayPage()) {
         enhancePlayPage();
     }
- 
+
 })();
