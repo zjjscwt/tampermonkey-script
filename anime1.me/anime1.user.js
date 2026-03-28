@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.0.1
+// @version      3.1.0
 // @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @connect      api.themoviedb.org
-// @connect      image.tmdb.org
+// @grant        GM_deleteValue
+// @grant        GM_listValues
+// @connect      api.bgm.tv
+// @connect      *.bgm.tv
 // @connect      anime1.me
 // @run-at       document-idle
 // @icon         https://anime1.me/favicon-32x32.png
@@ -51,165 +53,68 @@
     };
     // ===================== CONFIG =====================
     const CACHE_EXPIRY = 7 * 24 * 60 * 60 * 1000; // 7 days
-    const TMDB_API_APPLY_URL = 'https://www.themoviedb.org/settings/api';
-    const TMDB_API_STORAGE_KEY = 'tmdb_api_key';
-    const TMDB_API_HINT_SHOWN_KEY = 'tmdb_api_hint_shown_v1';
-    const TMDB_TEST_API_IMPORTED_KEY = 'tmdb_test_api_imported_v1';
-    const TMDB_TEST_API_KEY = '8baba8ab6b8bbe247645bcae7df63d0d';
-    let TMDB_API_KEY = getStoredTmdbApiKey();
-    const TMDB_API_URL = 'https://api.themoviedb.org/3';
-    const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
-    const TMDB_IMAGE_ORIGINAL_BASE = 'https://image.tmdb.org/t/p/original';
+    const BGM_API_URL = 'https://api.bgm.tv/v0';
+    const BGM_CACHE_PREFIX = 'bgm_v1_';
+    const BGM_USER_AGENT = 'Anime1Enhancer/3.0.1 (https://anime1.me/)';
     const API_RATE_INTERVAL = 300; // ms between requests
     const WATCH_PROGRESS_STORAGE_KEY = 'ae_watch_progress_v1';
     const FAVORITES_STORAGE_KEY = 'ae_favorites_v1';
 
-    function getStoredTmdbApiKey() {
-        try {
-            const stored = (GM_getValue(TMDB_API_STORAGE_KEY, '') || '').trim();
-            if (stored) return stored;
-            const imported = !!GM_getValue(TMDB_TEST_API_IMPORTED_KEY, false);
-            if (imported) return '';
-            GM_setValue(TMDB_API_STORAGE_KEY, TMDB_TEST_API_KEY);
-            GM_setValue(TMDB_TEST_API_IMPORTED_KEY, true);
-            return TMDB_TEST_API_KEY;
-        } catch {
-            return TMDB_TEST_API_KEY;
-        }
-    }
-
-    function isTestTmdbApiKey(key) {
-        return (key || '').trim() === TMDB_TEST_API_KEY;
-    }
-
-    function setStoredTmdbApiKey(key) {
-        TMDB_API_KEY = (key || '').trim();
-        try { GM_setValue(TMDB_API_STORAGE_KEY, TMDB_API_KEY); } catch { /* ignore */ }
-    }
-
-    function maybeShowApiSetupHint() {
-        if (TMDB_API_KEY) return;
-        let shown = false;
-        try { shown = !!GM_getValue(TMDB_API_HINT_SHOWN_KEY, false); } catch { /* ignore */ }
-        if (shown) return;
-        try { GM_setValue(TMDB_API_HINT_SHOWN_KEY, true); } catch { /* ignore */ }
-        setTimeout(() => openTmdbApiSettingsDialog({ firstTime: true }), 120);
-    }
-
-    function openTmdbApiSettingsDialog(options = {}) {
-        const existing = document.getElementById('ae-tmdb-modal');
+    function openGeneralSettingsDialog() {
+        const existing = document.getElementById('ae-general-modal');
         if (existing) return;
 
-        const current = getStoredTmdbApiKey();
         const overlay = document.createElement('div');
-        overlay.id = 'ae-tmdb-modal';
+        overlay.id = 'ae-general-modal';
         overlay.className = 'ae-modal-overlay';
         overlay.innerHTML = `
             <div class="ae-modal-panel" role="dialog" aria-modal="true" aria-labelledby="ae-modal-title">
                 <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
-                <h2 class="ae-modal-title" id="ae-modal-title">TMDB API 設定</h2>
-                ${options.firstTime ? '<p class="ae-modal-tip">首次使用需要先設定 API Key，下面三步即可完成。</p>' : ''}
-                <ol class="ae-modal-steps">
-                    <li>先到 <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer">TMDB 官網</a> 登入或註冊帳號</li>
-                    <li>進入 <a href="${TMDB_API_APPLY_URL}" target="_blank" rel="noopener noreferrer">API 申請頁</a> 建立 API，申请网址及内容可随意填写。</li>
-                    <li>取得 <strong>API Key (v3 auth)</strong> 後，回到這裡貼上並儲存</li>
-                </ol>
+                <h2 class="ae-modal-title" id="ae-modal-title">Anime1 增強設定</h2>
                 <div class="ae-modal-field">
-                    <label for="ae-tmdb-key-input">API Key (v3 auth)</label>
-                    <input id="ae-tmdb-key-input" type="text" placeholder="請貼上 TMDB API Key" value="${current}">
-                    <p id="ae-test-api-warning" class="ae-test-api-warning">现在使用的是测试API，随时可能失效，如有必要请自行申请</p>
+                    <p style="font-size:13px; color:var(--ae-text-secondary); line-height:1.6; margin-bottom:12px;">自定義主題色功能待更新</p>
+                    <p style="font-size:12px; color:var(--ae-text-muted);">更多功能正在開發中...</p>
                 </div>
                 <div id="ae-modal-status" class="ae-modal-status"></div>
                 <div class="ae-modal-actions">
-                    <button type="button" id="ae-clear-tmdb-key" class="ae-modal-btn ae-modal-btn-danger">清除</button>
-                    <button type="button" id="ae-use-test-tmdb-key" class="ae-modal-btn ae-modal-btn-ghost">使用测试API</button>
+                    <button type="button" id="ae-clear-bgm-cache" class="ae-modal-btn ae-modal-btn-danger">清除封面及評分緩存</button>
                     <span class="ae-modal-actions-spacer"></span>
-                    <button type="button" id="ae-cancel-tmdb-key" class="ae-modal-btn ae-modal-btn-ghost">取消</button>
-                    <button type="button" id="ae-save-tmdb-key" class="ae-modal-btn ae-modal-btn-primary">儲存並重新整理</button>
+                    <button type="button" id="ae-close-settings" class="ae-modal-btn ae-modal-btn-primary">確定</button>
                 </div>
             </div>
         `;
 
         document.body.appendChild(overlay);
 
-        const keyInput = overlay.querySelector('#ae-tmdb-key-input');
-        const statusEl = overlay.querySelector('#ae-modal-status');
-        const closeBtn = overlay.querySelector('.ae-modal-close');
-        const clearBtn = overlay.querySelector('#ae-clear-tmdb-key');
-        const useTestBtn = overlay.querySelector('#ae-use-test-tmdb-key');
-        const saveBtn = overlay.querySelector('#ae-save-tmdb-key');
-        const cancelBtn = overlay.querySelector('#ae-cancel-tmdb-key');
-        const testApiWarning = overlay.querySelector('#ae-test-api-warning');
-        let clearArmed = false;
-
-        const setStatus = (msg, type = 'info') => {
-            statusEl.textContent = msg || '';
-            statusEl.className = `ae-modal-status ${type ? `is-${type}` : ''}`;
-        };
-        const updateTestApiWarning = () => {
-            testApiWarning.style.display = isTestTmdbApiKey(keyInput.value) ? 'block' : 'none';
-        };
         const close = () => {
             document.removeEventListener('keydown', onKeydown);
             overlay.remove();
         };
-        const onKeydown = (e) => {
-            if (e.key === 'Escape') close();
-        };
+        const onKeydown = (e) => { if (e.key === 'Escape') close(); };
         document.addEventListener('keydown', onKeydown);
 
-        overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) close();
-        });
-        closeBtn.addEventListener('click', close);
-        cancelBtn.addEventListener('click', close);
-        keyInput.addEventListener('input', updateTestApiWarning);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        overlay.querySelector('.ae-modal-close').addEventListener('click', close);
+        overlay.querySelector('#ae-close-settings').addEventListener('click', close);
 
-        clearBtn.addEventListener('click', () => {
-            if (!current && !keyInput.value.trim()) {
-                setStatus('目前沒有可清除的 API Key。', 'info');
-                return;
+        overlay.querySelector('#ae-clear-bgm-cache').addEventListener('click', () => {
+            if (confirm('確定要清除所有已緩存的 Bangumi 封面數據嗎？')) {
+                try {
+                    const keys = GM_listValues();
+                    let count = 0;
+                    keys.forEach(k => {
+                        if (k.startsWith(BGM_CACHE_PREFIX)) {
+                            GM_deleteValue(k);
+                            count++;
+                        }
+                    });
+                    alert(`成功清除 ${count} 項封面，頁面即將重新整理。`);
+                    location.reload();
+                } catch (e) {
+                    alert('清除失敗，請檢查權限或手动清理油猴數據：' + e.message);
+                }
             }
-            if (!clearArmed) {
-                clearArmed = true;
-                clearBtn.textContent = '再按一次確認清除';
-                setStatus('再次點擊「再按一次確認清除」即可刪除 API Key。', 'warn');
-                setTimeout(() => {
-                    clearArmed = false;
-                    clearBtn.textContent = '清除';
-                }, 2500);
-                return;
-            }
-            setStoredTmdbApiKey('');
-            setStatus('API Key 已清除，頁面即將重新整理。', 'success');
-            setTimeout(() => location.reload(), 500);
         });
-
-        useTestBtn.addEventListener('click', () => {
-            keyInput.value = TMDB_TEST_API_KEY;
-            clearArmed = false;
-            clearBtn.textContent = '清除';
-            updateTestApiWarning();
-            setStatus('已填入测试API，点击「儲存並重新整理」後生效。', 'info');
-            keyInput.focus();
-            keyInput.select();
-        });
-
-        saveBtn.addEventListener('click', () => {
-            const next = keyInput.value.trim();
-            if (!next) {
-                setStatus('請先輸入 API Key，或使用「清除」按鈕。', 'warn');
-                keyInput.focus();
-                return;
-            }
-            setStoredTmdbApiKey(next);
-            setStatus('API Key 已儲存，頁面即將重新整理。', 'success');
-            setTimeout(() => location.reload(), 500);
-        });
-
-        updateTestApiWarning();
-        keyInput.focus();
-        keyInput.select();
     }
 
     // ===================== FONT =====================
@@ -293,30 +198,29 @@
     }
 
     function ensureApiSettingsButton(controlRoot) {
-        if (!controlRoot || document.getElementById('ae-tmdb-settings-btn')) return;
+        if (!controlRoot || document.getElementById('ae-settings-btn')) return;
 
         const btn = document.createElement('button');
-        btn.id = 'ae-tmdb-settings-btn';
+        btn.id = 'ae-settings-btn';
         btn.className = 'ae-settings-fab';
         btn.type = 'button';
-        btn.title = 'TMDB API 設定';
+        btn.title = '腳本設定';
         btn.innerHTML = `
             <svg viewBox="0 0 24 24" class="inline-svg" aria-hidden="true">
                 <path fill="currentColor" d="M19.14 12.94a7.43 7.43 0 0 0 .05-.94 7.43 7.43 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.27 7.27 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.43 7.43 0 0 0-.05.94 7.43 7.43 0 0 0 .05.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.51.4 1.05.71 1.63.94l.36 2.54a.5.5 0 0 0 .49.42h3.8a.5.5 0 0 0 .49-.42l.36-2.54c.58-.23 1.12-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"></path>
             </svg>
-            <span style="display:none;">TMDB 設定</span>
         `;
         btn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            openTmdbApiSettingsDialog();
+            openGeneralSettingsDialog();
         });
 
         controlRoot.appendChild(btn);
     }
 
     function getCacheKey(name) {
-        return 'tmdb_v4_' + name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').substring(0, 80);
+        return BGM_CACHE_PREFIX + name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').substring(0, 80);
     }
 
     function getCachedData(name) {
@@ -498,19 +402,32 @@
         return (Number.isFinite(classCat) && classCat > 0) ? classCat : null;
     }
 
-    // TMDB request queue for rate limiting
+    // Bangumi request queue
     let apiQueue = [];
     let apiProcessing = false;
+
+    function clearApiQueue() {
+        // Resolve all pending tasks with null to avoid hanging promises
+        apiQueue.forEach(item => item.resolve(null));
+        apiQueue = [];
+    }
 
     function processApiQueue() {
         if (apiProcessing || apiQueue.length === 0) return;
         apiProcessing = true;
-        const { url, resolve } = apiQueue.shift();
+        const item = apiQueue.shift();
+        if (!item) { apiProcessing = false; return; }
+        const { method, url, body, resolve } = item;
 
         GM_xmlhttpRequest({
-            method: 'GET',
+            method: method || 'GET',
             url: url,
-            headers: { 'Accept': 'application/json' },
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'User-Agent': BGM_USER_AGENT
+            },
+            data: body ? JSON.stringify(body) : null,
             onload(res) {
                 try {
                     const data = JSON.parse(res.responseText);
@@ -525,63 +442,56 @@
         });
     }
 
-    function tmdbRequest(endpoint, params = {}) {
+    function bgmRequest(endpoint, body = null) {
         return new Promise(resolve => {
-            if (!TMDB_API_KEY) {
-                console.warn('[Anime1 Enhancer] 尚未設定 TMDB API Key');
-                resolve(null);
-                return;
-            }
-            const queryParams = new URLSearchParams({
-                api_key: TMDB_API_KEY,
-                language: 'zh-TW',
-                include_adult: 'true',
-                ...params
-            });
-            const url = `${TMDB_API_URL}${endpoint}?${queryParams.toString()}`;
-            apiQueue.push({ url, resolve });
+            const url = `${BGM_API_URL}${endpoint}`;
+            apiQueue.push({ method: 'POST', url, body, resolve });
             processApiQueue();
         });
     }
 
-    async function searchTmdb(animeName) {
-        if (!TMDB_API_KEY) {
-            return { poster: null, banner: null, score: null, title: animeName };
-        }
-
+    async function searchBangumi(animeName, year) {
         const cached = getCachedData(animeName);
         if (cached !== null) return cached;
 
-        // Clean name for search
-        const cleanName = animeName
-            .replace(/第[一二三四五六七八九十百\d]+季/g, '')
-            .replace(/第[一二三四五六七八九十百\d]+部/g, '')
-            .replace(/Season\s*\d+/gi, '')
-            .replace(/Part\s*\d+/gi, '')
-            .replace(/\s+/g, ' ')
-            .trim();
+        const yearNum = parseInt(String(year || '').match(/\d+/)?.[0]);
+        const body = {
+            keyword: animeName,
+            filter: {
+                type: [2],
+                nsfw: false
+            },
+            limit: 3
+        };
 
-        const data = await tmdbRequest('/search/tv', { query: cleanName });
+        if (Number.isFinite(yearNum)) {
+            body.filter.air_date = [
+                `>=${yearNum}-01-01`,
+                `<${yearNum + 1}-01-01`
+            ];
+        }
 
-        if (data && data.results && data.results.length > 0) {
-            // Prefer entries with posters; fallback to the first result.
-            const media = data.results.find(item => item && item.poster_path) || data.results[0];
+        const data = await bgmRequest('/search/subjects', body);
+        
+        // If data is null (cancelled/error), just exit without caching failure
+        if (!data) return null;
+
+        if (data.data && data.data.length > 0) {
+            const media = data.data[0];
             const result = {
-                poster: media.poster_path ? `${TMDB_IMAGE_BASE}${media.poster_path}` : null,
-                banner: media.backdrop_path ? `${TMDB_IMAGE_ORIGINAL_BASE}${media.backdrop_path}` : null,
-                score: media.vote_average ? media.vote_average.toFixed(1) : null,
-                genres: [], // Search result doesn't give genre names, only IDs. Skipping for now.
-                title: media.name || media.original_name || animeName,
-                episodes: null, // Search result doesn't include episode count
-                status: null // Search result doesn't include status
+                poster: media.images?.large || media.images?.common || null,
+                score: media.rating?.score || null,
+                title: media.name_cn || media.name || animeName
             };
-            setCachedData(animeName, result);
+            
+            // Only cache if we actually found a poster URL
+            if (result.poster) {
+                setCachedData(animeName, result);
+            }
             return result;
         } else {
-            // Cache miss result too to avoid re-querying
-            const empty = { poster: null, banner: null, score: null, title: animeName };
-            setCachedData(animeName, empty);
-            return empty;
+            // Found nothing on Bangumi: don't cache to allow future retries
+            return { poster: null, score: null, title: animeName };
         }
     }
 
@@ -653,11 +563,11 @@
             border-color: rgba(216,180,254,0.7) !important;
             box-shadow: 0 14px 30px rgba(109,40,217,0.45), inset 0 1px 0 rgba(255,255,255,0.24) !important;
         }
-        #ae-tmdb-settings-btn { bottom: 74px !important; }
+        #ae-settings-btn { bottom: 74px !important; }
         #ae-scroll-top-btn-cloned { bottom: 18px !important; }
         #ae-scroll-top-btn-cloned *, #ae-scroll-top-btn-cloned { color: #f8fafc !important; fill: #f8fafc !important; display: inline-flex !important; }
-        #ae-tmdb-settings-btn.ae-settings-fab > span { display: none !important; }
-        #ae-tmdb-settings-btn.ae-settings-fab .inline-svg { width: 17px !important; height: 17px !important; margin: 0 !important; fill: currentColor !important; }
+        #ae-settings-btn.ae-settings-fab > span { display: none !important; }
+        #ae-settings-btn.ae-settings-fab .inline-svg { width: 17px !important; height: 17px !important; margin: 0 !important; fill: currentColor !important; }
 
         /* Common Modal Overlay & Panel */
         .ae-modal-overlay {
@@ -893,6 +803,7 @@
         }
 
         function filterAndRender() {
+            clearApiQueue();
             const watchMap = getWatchProgressMap();
             continueMetaByCat = new Map();
             const query = document.getElementById('ae-search-input')?.value?.toLowerCase() || '';
@@ -961,7 +872,7 @@
 
             batchItems.forEach((anime, idx) => {
                 const cardKey = `${anime.catId}-${start + idx}`;
-                loadCover(anime.name, cardKey);
+                loadCover(anime, cardKey);
             });
 
             renderCursor += batchItems.length;
@@ -1000,6 +911,7 @@
                     ? '<span class="ae-badge ae-badge-airing">● 連載中</span>'
                     : '<span class="ae-badge ae-badge-done">已完結</span>'}
                     ${epText ? `<span class="ae-badge ae-badge-ep">${isAiring ? 'EP ' : ''}${epText}</span>` : ''}
+                    <span class="ae-badge ae-badge-score" style="display:none;"></span>
                     ${progressText ? `<span class="ae-badge ae-badge-progress">${progressText}</span>` : ''}
                     ${(progressText && currentFilter === 'continue') ? '<button type="button" class="ae-progress-delete" title="刪除觀看記錄" aria-label="刪除觀看記錄">×</button>' : ''}
                     ${currentFilter === 'favorites' ? `<button type="button" class="ae-progress-delete ae-fav-delete" title="取消收藏" aria-label="取消收藏" data-cat-id="${anime.catId}">×</button>` : ''}
@@ -1015,63 +927,61 @@
             return card;
         }
 
-        async function loadCover(name, cardKey) {
+        async function loadCover(anime, cardKey) {
             const card = grid.querySelector(`.ae-card[data-card-key="${cardKey}"]`);
             if (!card) return;
             const img = card.querySelector('.ae-card-img');
             const placeholder = card.querySelector('.ae-card-poster-placeholder');
+            const scoreBadge = card.querySelector('.ae-badge-score');
 
-            const data = await searchTmdb(name);
+            const data = await searchBangumi(anime.name, anime.year);
 
-            if (data && data.poster) {
-                const showImage = (src) => {
-                    img.onload = () => {
-                        placeholder.style.display = 'none';
-                        img.classList.add('ae-loaded');
+            if (data) {
+                // Show Rating if available
+                if (data.score && scoreBadge) {
+                    const scoreValue = typeof data.score === 'number' ? data.score.toFixed(1) : data.score;
+                    scoreBadge.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>${scoreValue}`;
+                    scoreBadge.style.display = 'flex';
+                }
+
+                if (data.poster) {
+                    const showImage = (src) => {
+                        img.onload = () => {
+                            placeholder.style.display = 'none';
+                            img.classList.add('ae-loaded');
+                        };
+                        img.style.display = 'block';
+                        img.src = src;
                     };
-                    img.style.display = 'block';
-                    img.src = src;
-                };
 
-                const gmFallback = () => {
-                    GM_xmlhttpRequest({
-                        method: 'GET',
-                        url: data.poster,
-                        responseType: 'arraybuffer',
-                        onload: (response) => {
-                            if (response.status === 200 && response.response) {
-                                try {
-                                    const bytes = new Uint8Array(response.response);
-                                    let binary = '';
-                                    const chunk = 0x8000;
-                                    for (let i = 0; i < bytes.length; i += chunk) {
-                                        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-                                    }
-                                    const contentType = response.responseHeaders?.match(/content-type:\s*([^\r\n;]+)/i)?.[1] || 'image/jpeg';
-                                    const dataUrl = `data:${contentType};base64,${btoa(binary)}`;
-                                    img.onerror = (ev) => {
-                                        console.error('[Anime1 Enhancer] Data URL render failed:', { name, cardKey, ev });
-                                    };
-                                    showImage(dataUrl);
-                                } catch (e) {
-                                    console.error('[Anime1 Enhancer] Failed to convert image to data URL:', e);
+                    const gmFallback = () => {
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url: data.poster,
+                            responseType: 'arraybuffer',
+                            headers: { 'User-Agent': BGM_USER_AGENT },
+                            onload: (response) => {
+                                if (response.status === 200 && response.response) {
+                                    try {
+                                        const bytes = new Uint8Array(response.response);
+                                        let binary = '';
+                                        const chunk = 0x8000;
+                                        for (let i = 0; i < bytes.length; i += chunk) {
+                                            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+                                        }
+                                        const contentType = response.responseHeaders?.match(/content-type:\s*([^\r\n;]+)/i)?.[1] || 'image/jpeg';
+                                        const dataUrl = `data:${contentType};base64,${btoa(binary)}`;
+                                        showImage(dataUrl);
+                                    } catch (e) { console.error('[Anime1 Enhancer] Failed to convert image:', e); }
                                 }
-                            } else {
-                                console.error(`[Anime1 Enhancer] Failed to load image: ${response.status}`);
                             }
-                        },
-                        onerror: (e) => {
-                            console.error('[Anime1 Enhancer] Image load error:', e);
-                        }
-                    });
-                };
+                        });
+                    };
 
-                img.referrerPolicy = 'origin';
-                img.onerror = () => {
-                    gmFallback();
-                    img.onerror = null;
-                };
-                showImage(data.poster);
+                    img.referrerPolicy = 'no-referrer';
+                    img.onerror = () => { gmFallback(); img.onerror = null; };
+                    showImage(data.poster);
+                }
             }
         }
 
@@ -1441,11 +1351,22 @@
         .ae-card:hover .ae-card-img { transform: scale(1.08); }
 
         /* Badges */
-        .ae-badge { position: absolute; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px; z-index: 2; backdrop-filter: blur(8px); }
-        .ae-badge-airing { top: 8px; left: 8px; background: rgba(var(--ae-success-rgb),0.85); color: #fff; }
-        .ae-badge-done { top: 8px; left: 8px; background: rgba(107,114,128,0.8); color: #e5e7eb; }
-        .ae-badge-ep { bottom: 8px; left: 8px; background: rgba(var(--ae-primary-rgb),0.85); color: #fff; }
-        .ae-badge-progress { bottom: 34px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 16px); background: rgba(15,23,42,0.72); border: 1px solid rgba(148,163,184,0.35); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e8f0; }
+        .ae-badge { 
+            position: absolute; font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 8px; z-index: 2; 
+            backdrop-filter: blur(14px) saturate(1.2); border: 1px solid rgba(255,255,255,0.18); 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.35);
+        }
+        .ae-badge-airing { top: 8px; left: 8px; background: rgba(var(--ae-success-rgb),0.72); color: #fff; }
+        .ae-badge-done { top: 8px; left: 8px; background: rgba(107,114,128,0.68); color: #e5e7eb; }
+        .ae-badge-ep { bottom: 8px; left: 8px; background: rgba(var(--ae-primary-rgb),0.72); color: #fff; }
+        .ae-badge-score { 
+            bottom: 8px; right: 8px; 
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.82), rgba(217, 119, 6, 0.85)); 
+            color: #fff; display: flex; align-items: center; gap: 4px; 
+            box-shadow: 0 4px 18px rgba(217, 119, 6, 0.35); 
+        }
+        .ae-badge-score svg { width: 11px; height: 11px; fill: currentColor; margin-bottom: 1px; }
+        .ae-badge-progress { bottom: 34px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 16px); background: rgba(15,23,42,0.75); border: 1px solid rgba(148,163,184,0.3); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e8f0; }
 
         /* Deletions */
         .ae-progress-delete { position: absolute; top: 8px; right: 8px; width: 22px; height: 22px; border-radius: 50%; border: 1px solid rgba(var(--ae-danger-rgb),0.6); background: rgba(var(--ae-danger-rgb),0.72); color: #fff; display: inline-flex; align-items: center; justify-content: center; z-index: 3; transition: 0.2s; padding: 0; cursor: pointer; }
@@ -1978,13 +1899,11 @@
             }
         }
 
-        // Fetch TMDB banner/poster
-        let playPoster = null;
+        // Fetch Bangumi banner/poster
         if (animeName) {
-            searchTmdb(animeName).then(data => {
-                const heroImage = data?.banner || data?.poster || null;
+            searchBangumi(animeName).then(data => {
+                const heroImage = data?.poster || null;
                 if (heroImage && vjsContainer) {
-                    playPoster = heroImage;
                     const videoJsRoot = vjsContainer.querySelector('.video-js');
                     const vid = vjsContainer.querySelector('video');
                     const posterEl = vjsContainer.querySelector('.vjs-poster');
@@ -1992,7 +1911,7 @@
                     if (vid) vid.setAttribute('poster', heroImage);
                     if (posterEl) posterEl.style.backgroundImage = `url("${heroImage}")`;
                 }
-            });
+            }).catch(() => {});
         }
 
         // ---- Fetch all episodes from category in background ----
@@ -2149,7 +2068,6 @@
     mountSettingsFloatingButton();
     setTimeout(mountSettingsFloatingButton, 120);
     initForcedDarkMode();
-    maybeShowApiSetupHint();
 
     if (isHomePage()) {
         enhanceHomePage();
