@@ -1,8 +1,7 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @namespace    https://github.com/zjjscwt/tampermonkey-script
-// @version      2.4.1
-// @description  UI重構+封麵顯示+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
+// @version      2.5.0
+// @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
 // @grant        GM_xmlhttpRequest
@@ -31,6 +30,7 @@
     const TMDB_IMAGE_ORIGINAL_BASE = 'https://image.tmdb.org/t/p/original';
     const API_RATE_INTERVAL = 300; // ms between requests
     const WATCH_PROGRESS_STORAGE_KEY = 'ae_watch_progress_v1';
+    const FAVORITES_STORAGE_KEY = 'ae_favorites_v1';
 
     function getStoredTmdbApiKey() {
         try {
@@ -231,7 +231,33 @@
     }
 
     function mountSettingsFloatingButton() {
-        ensureApiSettingsButton(document.body || document.documentElement);
+        const root = document.body || document.documentElement;
+        ensureApiSettingsButton(root);
+        ensureCustomScrollTopButton();
+    }
+
+    function ensureCustomScrollTopButton() {
+        if (document.getElementById('ae-scroll-top-btn-cloned')) return;
+
+        const themeScroller = document.querySelector('.scroll-top');
+        if (!themeScroller) return;
+
+        const clone = themeScroller.cloneNode(true);
+        clone.id = 'ae-scroll-top-btn-cloned';
+        clone.className = 'ae-settings-fab';
+        
+        // Hide original permanently
+        themeScroller.style.setProperty('display', 'none', 'important');
+        themeScroller.style.setProperty('opacity', '0', 'important');
+        themeScroller.style.setProperty('pointer-events', 'none', 'important');
+        
+        themeScroller.parentNode.insertBefore(clone, themeScroller.nextSibling);
+
+        clone.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
     }
 
     function ensureApiSettingsButton(controlRoot) {
@@ -246,7 +272,7 @@
             <svg viewBox="0 0 24 24" class="inline-svg" aria-hidden="true">
                 <path fill="currentColor" d="M19.14 12.94a7.43 7.43 0 0 0 .05-.94 7.43 7.43 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.27 7.27 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.43 7.43 0 0 0-.05.94 7.43 7.43 0 0 0 .05.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.51.4 1.05.71 1.63.94l.36 2.54a.5.5 0 0 0 .49.42h3.8a.5.5 0 0 0 .49-.42l.36-2.54c.58-.23 1.12-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"></path>
             </svg>
-            <span>TMDB 設定</span>
+            <span style="display:none;">TMDB 設定</span>
         `;
         btn.addEventListener('click', (e) => {
             e.preventDefault();
@@ -338,6 +364,97 @@
         if (Number.isFinite(catId) && catId > 0) delete map[`cat:${catId}`];
         if (animeName) delete map[`name:${normalizeAnimeName(animeName)}`];
         setWatchProgressMap(map);
+    }
+
+    // ===================== FAVORITES =====================
+    function getFavoritesData() {
+        try {
+            const raw = GM_getValue(FAVORITES_STORAGE_KEY, null);
+            if (!raw) return initFavoritesData();
+            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (!parsed || !Array.isArray(parsed.categories) || typeof parsed.items !== 'object') return initFavoritesData();
+            if (!parsed.categories.find(c => c.id === 'default')) {
+                parsed.categories.unshift({ id: 'default', name: '默認分類', isDefault: true });
+            }
+            return parsed;
+        } catch { return initFavoritesData(); }
+    }
+
+    function initFavoritesData() {
+        const data = { categories: [{ id: 'default', name: '默認分類', isDefault: true }], items: {} };
+        setFavoritesData(data);
+        return data;
+    }
+
+    function setFavoritesData(data) {
+        try { GM_setValue(FAVORITES_STORAGE_KEY, JSON.stringify(data)); } catch { /* ignore */ }
+    }
+
+    function isAnimeFavorited(catId) {
+        if (!catId) return false;
+        const data = getFavoritesData();
+        return !!(data.items[`cat:${catId}`] && data.items[`cat:${catId}`].length > 0);
+    }
+
+    function getAnimeFavoriteCategories(catId) {
+        if (!catId) return [];
+        return getFavoritesData().items[`cat:${catId}`] || [];
+    }
+
+    function toggleAnimeInCategory(catId, animeName, categoryId) {
+        const data = getFavoritesData();
+        const key = `cat:${catId}`;
+        if (!data.items[key]) data.items[key] = [];
+        const idx = data.items[key].indexOf(categoryId);
+        if (idx >= 0) { data.items[key].splice(idx, 1); }
+        else { data.items[key].push(categoryId); }
+        if (data.items[key].length === 0) delete data.items[key];
+        setFavoritesData(data);
+    }
+
+    function addFavoriteCategory(name) {
+        const data = getFavoritesData();
+        const id = 'fav_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+        data.categories.push({ id, name });
+        setFavoritesData(data);
+        return id;
+    }
+
+    function deleteFavoriteCategory(categoryId) {
+        if (categoryId === 'default') return false;
+        const data = getFavoritesData();
+        data.categories = data.categories.filter(c => c.id !== categoryId);
+        for (const key of Object.keys(data.items)) {
+            data.items[key] = data.items[key].filter(cid => cid !== categoryId);
+            if (data.items[key].length === 0) delete data.items[key];
+        }
+        setFavoritesData(data);
+        return true;
+    }
+
+    function renameFavoriteCategory(categoryId, newName) {
+        if (categoryId === 'default') return false;
+        const data = getFavoritesData();
+        const cat = data.categories.find(c => c.id === categoryId);
+        if (cat) { cat.name = newName; setFavoritesData(data); return true; }
+        return false;
+    }
+
+    function deleteFavoriteAnime(catId) {
+        if (!catId) return;
+        const data = getFavoritesData();
+        delete data.items[`cat:${catId}`];
+        setFavoritesData(data);
+    }
+
+    function moveAnimeToCategory(catId, fromCategoryId, toCategoryId) {
+        const data = getFavoritesData();
+        const key = `cat:${catId}`;
+        if (!data.items[key]) return;
+        data.items[key] = data.items[key].filter(cid => cid !== fromCategoryId);
+        if (!data.items[key].includes(toCategoryId)) data.items[key].push(toCategoryId);
+        if (data.items[key].length === 0) delete data.items[key];
+        setFavoritesData(data);
     }
 
     function getCurrentCategoryId() {
@@ -559,66 +676,56 @@
             display: none !important;
         }
 
-        /* Back-to-top button -> fixed bottom-right */
-        #colophon .scroll-top {
-            position: fixed !important;
-            right: 18px !important;
-            bottom: 18px !important;
-            z-index: 9999 !important;
-            margin: 0 !important;
-            border: none !important;
-            box-shadow: none !important;
-        }
-        #colophon #scrolltop {
-            width: 42px !important;
-            height: 42px !important;
-            border-radius: 999px !important;
-            display: inline-flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            text-decoration: none !important;
-            background: linear-gradient(135deg, #7c3aed, #a855f7) !important;
-            color: #fff !important;
-            box-shadow: 0 8px 22px rgba(124,58,237,0.35) !important;
-            border: none !important;
-            outline: none !important;
-        }
-        #colophon .scroll-top::before,
-        #colophon .scroll-top::after,
-        #colophon #scrolltop::before,
-        #colophon #scrolltop::after {
-            display: none !important;
-            border: none !important;
-        }
-
-        /* Hide all site theme switch controls; script enforces dark mode */
+        /* Hide theme's native scrolltop and darkmode */
+        #colophon .scroll-top:not(#ae-scroll-top-btn-cloned),
         .darkmode-control {
             display: none !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
         }
 
-        #ae-tmdb-settings-btn.ae-settings-fab {
+        .ae-settings-fab {
             position: fixed !important;
             right: 18px !important;
-            bottom: 18px !important;
             z-index: 9999 !important;
-            width: 42px !important;
-            height: 42px !important;
+            width: 44px !important;
+            height: 44px !important;
             border-radius: 999px !important;
             padding: 0 !important;
             display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
-            border: none !important;
-            color: #dbeafe !important;
-            transition: all 0.2s ease !important;
+            color: #f8fafc !important;
             cursor: pointer !important;
-            border: 1px solid rgba(147,197,253,0.5) !important;
-            background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
-            box-shadow: 0 8px 22px rgba(37,99,235,0.35) !important;
+            background: radial-gradient(circle at 28% 22%, rgba(196,181,253,0.35), rgba(124,58,237,0.42) 46%, rgba(15,23,42,0.84) 100%) !important;
+            border: 1px solid rgba(196,181,253,0.42) !important;
+            box-shadow: 0 10px 24px rgba(76,29,149,0.36), inset 0 1px 0 rgba(255,255,255,0.16) !important;
+            backdrop-filter: blur(10px) saturate(1.1) !important;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease !important;
+            text-decoration: none !important;
         }
-        body.home #ae-tmdb-settings-btn.ae-settings-fab {
-            bottom: 68px !important;
+        .ae-settings-fab:hover {
+            transform: scale(1.04) !important;
+            border-color: rgba(216,180,254,0.7) !important;
+            box-shadow: 0 14px 30px rgba(109,40,217,0.45), inset 0 1px 0 rgba(255,255,255,0.24) !important;
         }
+        #ae-scroll-top-btn-cloned::before,
+        #ae-scroll-top-btn-cloned::after {
+            display: none !important;
+        }
+
+        #ae-tmdb-settings-btn {
+            bottom: 74px !important;
+        }
+        #ae-scroll-top-btn-cloned {
+            bottom: 18px !important;
+        }
+        #ae-scroll-top-btn-cloned,
+        #ae-scroll-top-btn-cloned * {
+            color: #f8fafc !important;
+            fill: #f8fafc !important;
+        }
+
         #ae-tmdb-settings-btn.ae-settings-fab > span {
             display: none !important;
         }
@@ -633,9 +740,6 @@
         }
         #ae-tmdb-settings-btn.ae-settings-fab .inline-svg path:not([stroke]) {
             fill: currentColor !important;
-        }
-        #ae-tmdb-settings-btn.ae-settings-fab:hover {
-            filter: brightness(1.08);
         }
 
         .ae-modal-overlay {
@@ -801,6 +905,110 @@
                 height: 34px;
             }
         }
+
+        /* Favorite Star Button */
+        .ae-fav-star {
+            position: absolute; bottom: 8px; right: 8px;
+            width: 32px; height: 32px;
+            border-radius: 999px; border: none;
+            background: rgba(0,0,0,0.55); backdrop-filter: blur(8px);
+            color: rgba(255,255,255,0.5);
+            cursor: pointer; z-index: 3;
+            display: inline-flex; align-items: center; justify-content: center;
+            padding: 0; transition: all 0.25s ease;
+        }
+        .ae-fav-star svg { fill: none; stroke: currentColor; stroke-width: 1.8; transition: all 0.25s ease; }
+        .ae-fav-star:hover { background: rgba(0,0,0,0.75); color: #fbbf24; transform: scale(1.15); }
+        .ae-fav-star:hover svg { fill: rgba(251,191,36,0.3); stroke: #fbbf24; }
+        .ae-fav-star.is-favorited { color: #fbbf24; }
+        .ae-fav-star.is-favorited svg { fill: #fbbf24; stroke: #fbbf24; }
+        .ae-fav-star.is-favorited:hover { color: #fde68a; }
+        .ae-fav-star.is-favorited:hover svg { fill: #fde68a; stroke: #fde68a; }
+
+        /* Favorites Modal */
+        .ae-fav-modal-panel { max-width: 420px; }
+        .ae-fav-modal-title {
+            display: flex !important; align-items: center !important; gap: 8px !important;
+        }
+        .ae-fav-modal-title svg { flex-shrink: 0; }
+        .ae-fav-cat-list {
+            max-height: 280px; overflow-y: auto;
+            margin-bottom: 14px;
+            display: flex; flex-direction: column; gap: 4px;
+        }
+        .ae-fav-cat-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 12px; border-radius: 10px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            cursor: pointer; transition: all 0.2s ease;
+        }
+        .ae-fav-cat-item:hover { background: rgba(255,255,255,0.08); border-color: rgba(251,191,36,0.3); }
+        .ae-fav-cat-check {
+            accent-color: #f59e0b; width: 16px; height: 16px; cursor: pointer;
+        }
+        .ae-fav-cat-label { flex: 1; font-size: 14px; color: rgba(255,255,255,0.9); }
+        .ae-fav-cat-badge {
+            font-size: 10px; padding: 2px 8px; border-radius: 999px;
+            background: rgba(251,191,36,0.15); color: #fde68a;
+            border: 1px solid rgba(251,191,36,0.3);
+        }
+        .ae-fav-add-row {
+            display: flex; gap: 8px; align-items: center;
+        }
+        .ae-fav-new-cat-input {
+            flex: 1; height: 36px; border-radius: 10px;
+            border: 1px solid rgba(139,92,246,0.3);
+            background: rgba(30,41,59,0.4); color: rgba(255,255,255,0.92);
+            padding: 0 12px; font-size: 13px; outline: none; font-family: inherit;
+        }
+        .ae-fav-new-cat-input:focus {
+            border-color: rgba(251,191,36,0.7);
+            box-shadow: 0 0 0 2px rgba(251,191,36,0.15);
+        }
+        .ae-fav-add-btn { flex-shrink: 0; }
+
+        /* Manage Modal */
+        .ae-fav-manage-panel { max-width: 480px; }
+        .ae-fav-manage-list {
+            max-height: 320px; overflow-y: auto;
+            margin-bottom: 14px;
+            display: flex; flex-direction: column; gap: 4px;
+        }
+        .ae-fav-manage-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 14px; border-radius: 10px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            transition: all 0.2s ease;
+        }
+        .ae-fav-manage-item:hover { background: rgba(255,255,255,0.07); }
+        .ae-fav-manage-name { flex: 1; font-size: 14px; color: rgba(255,255,255,0.9); font-weight: 500; }
+        .ae-fav-manage-count { font-size: 12px; color: rgba(255,255,255,0.45); white-space: nowrap; }
+        .ae-fav-manage-actions { display: flex; gap: 6px; align-items: center; }
+        .ae-fav-manage-default {
+            font-size: 11px; color: rgba(251,191,36,0.7);
+            padding: 2px 8px; border-radius: 6px;
+            background: rgba(251,191,36,0.1);
+        }
+        .ae-fav-act-btn {
+            width: 30px; height: 30px; border-radius: 8px;
+            border: 1px solid rgba(148,163,184,0.3);
+            background: rgba(30,41,59,0.5); cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 14px; padding: 0; transition: all 0.2s ease;
+        }
+        .ae-fav-act-btn:hover { background: rgba(51,65,85,0.7); border-color: rgba(196,181,253,0.5); }
+        .ae-fav-rename-input {
+            flex: 1; height: 32px; border-radius: 8px;
+            border: 1px solid rgba(251,191,36,0.5);
+            background: rgba(30,41,59,0.6); color: rgba(255,255,255,0.92);
+            padding: 0 10px; font-size: 14px; outline: none; font-family: inherit;
+        }
+        .ae-fav-rename-input:focus {
+            border-color: rgba(251,191,36,0.8);
+            box-shadow: 0 0 0 2px rgba(251,191,36,0.2);
+        }
     `);
 
     // ===================== HOMEPAGE =====================
@@ -879,9 +1087,14 @@
                 <div class="ae-filter-pills">
                     <button class="ae-pill active" data-filter="all">全部</button>
                     <button class="ae-pill" data-filter="continue">继续观看</button>
+                    <button class="ae-pill" data-filter="favorites">⭐ 收藏夾</button>
                     <button class="ae-pill" data-filter="airing">連載中</button>
                     <button class="ae-pill" data-filter="completed">已完結</button>
                     <div class="ae-season-filters" id="ae-season-filters"></div>
+                </div>
+                <div class="ae-fav-panel" id="ae-fav-panel" style="display:none;">
+                    <div class="ae-fav-tabs" id="ae-fav-tabs"></div>
+                    <button type="button" class="ae-fav-manage-btn" id="ae-fav-manage-btn">分類管理</button>
                 </div>
             </div>
             <div class="ae-grid" id="ae-grid"></div>
@@ -921,6 +1134,7 @@
         let filteredList = [...animeList];
         let currentFilter = 'all';
         let currentSeason = '';
+        let currentFavCategory = '';
         let continueMetaByCat = new Map();
         let renderCursor = 0;
         let loadingMore = false;
@@ -995,6 +1209,7 @@
                 const matchesSearch = !query || a.name.toLowerCase().includes(query);
                 const matchesFilter = currentFilter === 'all' ||
                     (currentFilter === 'continue' && !!progress) ||
+                    (currentFilter === 'favorites' && isAnimeFavorited(a.catId) && (!currentFavCategory || getAnimeFavoriteCategories(a.catId).includes(currentFavCategory))) ||
                     (currentFilter === 'airing' && a.episodes.includes('連載中')) ||
                     (currentFilter === 'completed' && !a.episodes.includes('連載中'));
                 const matchesSeason = !currentSeason || `${a.year}年${a.season}季` === currentSeason;
@@ -1013,6 +1228,8 @@
             updateStatus();
             renderNextBatch();
             syncPageJumpBall(true);
+            refreshFavoritesPanel();
+            setupFavDragDrop();
         }
 
         function updateStatus() {
@@ -1092,10 +1309,7 @@
                     ${epText ? `<span class="ae-badge ae-badge-ep">${isAiring ? 'EP ' : ''}${epText}</span>` : ''}
                     ${progressText ? `<span class="ae-badge ae-badge-progress">${progressText}</span>` : ''}
                     ${(progressText && currentFilter === 'continue') ? '<button type="button" class="ae-progress-delete" title="刪除觀看記錄" aria-label="刪除觀看記錄">×</button>' : ''}
-                    <div class="ae-card-rating" id="ae-rating-${index}" style="display:none;">
-                        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-                        <span class="ae-rating-val"></span>
-                    </div>
+                    ${currentFilter === 'favorites' ? `<button type="button" class="ae-progress-delete ae-fav-delete" title="取消收藏" aria-label="取消收藏" data-cat-id="${anime.catId}">×</button>` : ''}
                 </div>
                 <div class="ae-card-info">
                     <h3 class="ae-card-title">${anime.name}</h3>
@@ -1113,7 +1327,6 @@
             if (!card) return;
             const img = card.querySelector('.ae-card-img');
             const placeholder = card.querySelector('.ae-card-poster-placeholder');
-            const ratingEl = card.querySelector(`#ae-rating-${card.dataset.index}`);
 
             const data = await searchTmdb(name);
 
@@ -1131,8 +1344,6 @@
                     GM_xmlhttpRequest({
                         method: 'GET',
                         url: data.poster,
-                        // `blob:` URLs can be blocked in some userscript sandboxes.
-                        // Convert to data URL directly for maximum compatibility.
                         responseType: 'arraybuffer',
                         onload: (response) => {
                             if (response.status === 200 && response.response) {
@@ -1162,19 +1373,12 @@
                     });
                 };
 
-                // Direct image URL works on most environments and avoids binary decoding issues.
                 img.referrerPolicy = 'origin';
                 img.onerror = () => {
-                    // Fallback to GM_xmlhttpRequest for environments with strict page CSP / CORS behavior.
                     gmFallback();
                     img.onerror = null;
                 };
                 showImage(data.poster);
-            }
-
-            if (data && data.score && ratingEl) {
-                ratingEl.querySelector('.ae-rating-val').textContent = data.score;
-                ratingEl.style.display = 'flex';
             }
         }
 
@@ -1185,10 +1389,31 @@
                 document.querySelectorAll('.ae-pill:not(.ae-pill-season)').forEach(p => p.classList.remove('active'));
                 pill.classList.add('active');
                 currentFilter = pill.dataset.filter;
+                if (currentFilter !== 'favorites') currentFavCategory = '';
                 filterAndRender();
             });
         });
+        document.getElementById('ae-fav-manage-btn')?.addEventListener('click', () => {
+            openFavManageModal(() => { filterAndRender(); });
+        });
         grid.addEventListener('click', (event) => {
+            // Delete favorite click (when in favorites filter)
+            const favDelBtn = event.target.closest('.ae-fav-delete');
+            if (favDelBtn) {
+                event.preventDefault();
+                event.stopPropagation();
+                const card = favDelBtn.closest('.ae-card');
+                if (!card) return;
+                const index = Number(card.dataset.index);
+                const anime = Number.isFinite(index) ? filteredList[index] : null;
+                if (!anime) return;
+                if (confirm(`確定要取消收藏「${anime.name}」吗？`)) {
+                    deleteFavoriteAnime(anime.catId);
+                    filterAndRender();
+                }
+                return;
+            }
+            // Delete progress click
             const btn = event.target.closest('.ae-progress-delete');
             if (!btn) return;
             event.preventDefault();
@@ -1235,6 +1460,91 @@
         }
         window.addEventListener('scroll', debounce(() => syncPageJumpBall(), 80));
 
+        function refreshFavoritesPanel() {
+            const panel = document.getElementById('ae-fav-panel');
+            if (!panel) return;
+            if (currentFilter !== 'favorites') {
+                panel.style.display = 'none';
+                return;
+            }
+            panel.style.display = '';
+            const tabsContainer = document.getElementById('ae-fav-tabs');
+            if (!tabsContainer) return;
+            tabsContainer.innerHTML = '';
+            const data = getFavoritesData();
+
+            // "All" tab
+            const allTab = document.createElement('button');
+            allTab.type = 'button';
+            allTab.className = 'ae-fav-cat-tab' + (!currentFavCategory ? ' active' : '');
+            allTab.textContent = '全部';
+            allTab.addEventListener('click', () => { currentFavCategory = ''; filterAndRender(); });
+            allTab.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; allTab.classList.add('ae-drag-over'); });
+            allTab.addEventListener('dragleave', () => allTab.classList.remove('ae-drag-over'));
+            allTab.addEventListener('drop', e => { e.preventDefault(); allTab.classList.remove('ae-drag-over'); });
+            tabsContainer.appendChild(allTab);
+
+            data.categories.forEach(cat => {
+                const tab = document.createElement('button');
+                tab.type = 'button';
+                tab.className = 'ae-fav-cat-tab' + (currentFavCategory === cat.id ? ' active' : '');
+                tab.dataset.catId = cat.id;
+                const count = Object.values(data.items).filter(arr => arr.includes(cat.id)).length;
+                tab.textContent = `${cat.name} (${count})`;
+                tab.addEventListener('click', () => { currentFavCategory = (currentFavCategory === cat.id) ? '' : cat.id; filterAndRender(); });
+
+                // Drop target for drag
+                tab.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; tab.classList.add('ae-drag-over'); });
+                tab.addEventListener('dragleave', () => tab.classList.remove('ae-drag-over'));
+                tab.addEventListener('drop', e => {
+                    e.preventDefault();
+                    tab.classList.remove('ae-drag-over');
+                    try {
+                        const info = JSON.parse(e.dataTransfer.getData('text/plain'));
+                        if (info.catId && info.fromCategory && cat.id !== info.fromCategory) {
+                            moveAnimeToCategory(info.catId, info.fromCategory, cat.id);
+                            filterAndRender();
+                        }
+                    } catch { /* ignore */ }
+                });
+                tabsContainer.appendChild(tab);
+            });
+        }
+
+        function setupFavDragDrop() {
+            if (currentFilter !== 'favorites' || !currentFavCategory) {
+                grid.querySelectorAll('.ae-card').forEach(c => { c.draggable = false; c.classList.remove('ae-draggable'); });
+                return;
+            }
+            grid.querySelectorAll('.ae-card').forEach(card => {
+                card.draggable = true;
+                card.classList.add('ae-draggable');
+            });
+
+            // Only bind once
+            if (!grid.dataset.favDragBound) {
+                grid.dataset.favDragBound = '1';
+                grid.addEventListener('dragstart', e => {
+                    const card = e.target.closest('.ae-card');
+                    if (!card) return;
+                    const star = card.querySelector('.ae-fav-star');
+                    if (!star) return;
+                    e.dataTransfer.setData('text/plain', JSON.stringify({
+                        catId: parseInt(star.dataset.catId, 10),
+                        animeName: star.dataset.animeName,
+                        fromCategory: currentFavCategory
+                    }));
+                    e.dataTransfer.effectAllowed = 'move';
+                    card.classList.add('ae-dragging');
+                });
+                grid.addEventListener('dragend', e => {
+                    const card = e.target.closest('.ae-card');
+                    if (card) card.classList.remove('ae-dragging');
+                    document.querySelectorAll('.ae-fav-cat-tab').forEach(t => t.classList.remove('ae-drag-over'));
+                });
+            }
+        }
+
         filterAndRender();
     }
 
@@ -1255,6 +1565,220 @@
 
     function debounce(fn, delay) {
         let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), delay); };
+    }
+
+    function updateCardFavoriteStar(catId) {
+        document.querySelectorAll(`.ae-fav-star[data-cat-id="${catId}"]`).forEach(star => {
+            const isFav = isAnimeFavorited(catId);
+            star.classList.toggle('is-favorited', isFav);
+            star.title = isFav ? '已收藏' : '收藏';
+        });
+        const playBtn = document.getElementById('ap-fav-btn');
+        if (playBtn && parseInt(playBtn.dataset.catId, 10) === catId) {
+            const isFav = isAnimeFavorited(catId);
+            playBtn.classList.toggle('is-favorited', isFav);
+            const textEl = playBtn.querySelector('.ap-fav-text');
+            if (textEl) textEl.textContent = isFav ? '取消收藏' : '加入收藏';
+        }
+    }
+
+    function openFavoritesModal(anime) {
+        const existing = document.getElementById('ae-fav-modal');
+        if (existing) existing.remove();
+        const key = `cat:${anime.catId}`;
+
+        const buildCatList = () => {
+            const d = getFavoritesData();
+            const checked = d.items[key] || [];
+            return d.categories.map(c => `
+                <label class="ae-fav-cat-item">
+                    <input type="checkbox" class="ae-fav-cat-check" data-cat-id="${c.id}" ${checked.includes(c.id) ? 'checked' : ''}>
+                    <span class="ae-fav-cat-label">${c.name}</span>
+                    ${c.isDefault ? '<span class="ae-fav-cat-badge">默認</span>' : ''}
+                </label>
+            `).join('');
+        };
+
+        const overlay = document.createElement('div');
+        overlay.id = 'ae-fav-modal';
+        overlay.className = 'ae-modal-overlay';
+        overlay.innerHTML = `
+            <div class="ae-modal-panel ae-fav-modal-panel" role="dialog" aria-modal="true">
+                <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
+                <h2 class="ae-modal-title ae-fav-modal-title">
+                    <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="#fbbf24" stroke="#fbbf24" stroke-width="1"/></svg>
+                    收藏 — ${anime.name}
+                </h2>
+                <div class="ae-fav-cat-list" id="ae-fav-cat-list">${buildCatList()}</div>
+                <div class="ae-modal-footer" style="display:flex; justify-content:space-between; margin-top:16px;">
+                    <button type="button" id="ae-fav-add-cat-btn" class="ae-modal-btn ae-modal-btn-ghost">新增</button>
+                    <button type="button" id="ae-fav-save-btn" class="ae-modal-btn ae-modal-btn-primary">保存</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const close = () => overlay.remove();
+        overlay.querySelector('.ae-modal-close').addEventListener('click', close);
+        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+        const onKey = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
+        document.addEventListener('keydown', onKey);
+
+        overlay.querySelector('#ae-fav-cat-list').addEventListener('change', e => {
+            const check = e.target.closest('.ae-fav-cat-check');
+            if (!check) return;
+            toggleAnimeInCategory(anime.catId, anime.name, check.dataset.catId);
+            updateCardFavoriteStar(anime.catId);
+        });
+
+        overlay.querySelector('#ae-fav-save-btn').addEventListener('click', close);
+        overlay.querySelector('#ae-fav-add-cat-btn').addEventListener('click', () => {
+            const listEl = overlay.querySelector('#ae-fav-cat-list');
+            if (listEl.querySelector('.ae-fav-inline-add')) return;
+            const addRow = document.createElement('div');
+            addRow.className = 'ae-fav-cat-item ae-fav-inline-add';
+            addRow.style.padding = '6px 12px';
+            addRow.innerHTML = `
+                <input type="text" class="ae-fav-rename-input ae-inline-add-input" placeholder="新增分類名稱..." maxlength="30" style="flex:1;">
+                <button type="button" class="ae-fav-act-btn ae-fav-confirm-add-btn" title="確認" style="flex-shrink:0;">✓</button>
+                <button type="button" class="ae-fav-act-btn ae-fav-cancel-add-btn" title="取消" style="flex-shrink:0;">✗</button>
+            `;
+            listEl.appendChild(addRow);
+            const input = addRow.querySelector('input');
+            input.focus();
+            const doInlineAdd = () => {
+                const name = input.value.trim();
+                if (name) addFavoriteCategory(name);
+                listEl.innerHTML = buildCatList();
+            };
+            addRow.querySelector('.ae-fav-confirm-add-btn').addEventListener('click', doInlineAdd);
+            addRow.querySelector('.ae-fav-cancel-add-btn').addEventListener('click', () => {
+                listEl.innerHTML = buildCatList();
+            });
+            input.addEventListener('keydown', e => {
+                if (e.key === 'Enter') { e.preventDefault(); doInlineAdd(); }
+                if (e.key === 'Escape') { e.preventDefault(); listEl.innerHTML = buildCatList(); }
+            });
+            listEl.scrollTop = listEl.scrollHeight;
+        });
+    }
+
+    function openFavManageModal(onClose) {
+        const existing = document.getElementById('ae-fav-manage-modal');
+        if (existing) existing.remove();
+        const overlay = document.createElement('div');
+        overlay.id = 'ae-fav-manage-modal';
+        overlay.className = 'ae-modal-overlay';
+
+        const buildList = () => {
+            const d = getFavoritesData();
+            return d.categories.map(c => {
+                const count = Object.values(d.items).filter(arr => arr.includes(c.id)).length;
+                return `
+                    <div class="ae-fav-manage-item" data-cat-id="${c.id}">
+                        <span class="ae-fav-manage-name">${c.name}</span>
+                        <span class="ae-fav-manage-count">${count} 部</span>
+                        <div class="ae-fav-manage-actions">
+                            ${c.isDefault
+                        ? '<span class="ae-fav-manage-default">系統默認</span>'
+                        : `<button type="button" class="ae-fav-act-btn ae-fav-rename-btn" data-cat-id="${c.id}" title="重命名">✏️</button>
+                                   <button type="button" class="ae-fav-act-btn ae-fav-delete-btn" data-cat-id="${c.id}" title="刪除">🗑️</button>`
+                    }
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        };
+
+        overlay.innerHTML = `
+            <div class="ae-modal-panel ae-fav-manage-panel" role="dialog" aria-modal="true">
+                <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
+                <h2 class="ae-modal-title">管理收藏分類</h2>
+                <div class="ae-fav-manage-list" id="ae-fav-manage-list">${buildList()}</div>
+                <div class="ae-modal-footer" style="display:flex; justify-content:space-between; margin-top:16px;">
+                    <button type="button" id="ae-fav-manage-add-btn" class="ae-modal-btn ae-modal-btn-ghost">新增</button>
+                    <button type="button" id="ae-fav-manage-save-btn" class="ae-modal-btn ae-modal-btn-primary">保存</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const close = () => { overlay.remove(); if (typeof onClose === 'function') onClose(); };
+        overlay.querySelector('.ae-modal-close').addEventListener('click', close);
+        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+        const onKey = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
+        document.addEventListener('keydown', onKey);
+
+        const listEl = overlay.querySelector('#ae-fav-manage-list');
+        listEl.addEventListener('click', e => {
+            const delBtn = e.target.closest('.ae-fav-delete-btn');
+            if (delBtn) {
+                const cId = delBtn.dataset.catId;
+                const d = getFavoritesData();
+                const cat = d.categories.find(c => c.id === cId);
+                const count = Object.values(d.items).filter(arr => arr.includes(cId)).length;
+                if (confirm(`確定要刪除分類「${cat?.name || ''}」嗎？\n將同時刪除該分類下的 ${count} 部收藏。`)) {
+                    deleteFavoriteCategory(cId);
+                    listEl.innerHTML = buildList();
+                }
+                return;
+            }
+            const renBtn = e.target.closest('.ae-fav-rename-btn');
+            if (renBtn) {
+                const cId = renBtn.dataset.catId;
+                const item = listEl.querySelector(`.ae-fav-manage-item[data-cat-id="${cId}"]`);
+                const nameEl = item?.querySelector('.ae-fav-manage-name');
+                if (!nameEl) return;
+                const cur = nameEl.textContent;
+                const input = document.createElement('input');
+                input.type = 'text'; input.value = cur; input.className = 'ae-fav-rename-input';
+                nameEl.replaceWith(input);
+                input.focus(); input.select();
+                const finish = () => {
+                    const n = input.value.trim();
+                    if (n && n !== cur) renameFavoriteCategory(cId, n);
+                    listEl.innerHTML = buildList();
+                };
+                input.addEventListener('blur', finish);
+                input.addEventListener('keydown', ev => {
+                    if (ev.key === 'Enter') { ev.preventDefault(); finish(); }
+                    if (ev.key === 'Escape') { listEl.innerHTML = buildList(); }
+                });
+            }
+        });
+
+        overlay.querySelector('#ae-fav-manage-save-btn').addEventListener('click', close);
+        overlay.querySelector('#ae-fav-manage-add-btn').addEventListener('click', () => {
+            const listEl = overlay.querySelector('#ae-fav-manage-list');
+            if (listEl.querySelector('.ae-fav-inline-add')) return;
+            const addRow = document.createElement('div');
+            addRow.className = 'ae-fav-manage-item ae-fav-inline-add';
+            addRow.style.padding = '6px 14px';
+            addRow.innerHTML = `
+                <input type="text" class="ae-fav-rename-input ae-inline-add-input" placeholder="新增分類名稱..." maxlength="30" style="flex:1;">
+                <div class="ae-fav-manage-actions" style="flex-shrink:0;">
+                    <button type="button" class="ae-fav-act-btn ae-fav-confirm-add-btn" title="確認">✓</button>
+                    <button type="button" class="ae-fav-act-btn ae-fav-cancel-add-btn" title="取消">✗</button>
+                </div>
+            `;
+            listEl.appendChild(addRow);
+            const input = addRow.querySelector('input');
+            input.focus();
+            const doInlineAdd = () => {
+                const name = input.value.trim();
+                if (name) addFavoriteCategory(name);
+                listEl.innerHTML = buildList();
+            };
+            addRow.querySelector('.ae-fav-confirm-add-btn').addEventListener('click', doInlineAdd);
+            addRow.querySelector('.ae-fav-cancel-add-btn').addEventListener('click', () => {
+                listEl.innerHTML = buildList();
+            });
+            input.addEventListener('keydown', e => {
+                if (e.key === 'Enter') { e.preventDefault(); doInlineAdd(); }
+                if (e.key === 'Escape') { e.preventDefault(); listEl.innerHTML = buildList(); }
+            });
+            listEl.scrollTop = listEl.scrollHeight;
+        });
     }
 
     const HOMEPAGE_CSS = `
@@ -1523,6 +2047,62 @@
             font-size: 12px; font-weight: 600; backdrop-filter: blur(8px); z-index: 2;
         }
         .ae-card-rating svg { width: 12px; height: 12px; }
+
+        /* Favorites Pill */
+        .ae-pill[data-filter="favorites"] {
+            border-color: rgba(251,191,36,0.4);
+            background: rgba(251,191,36,0.1);
+            color: #fde68a;
+        }
+        .ae-pill[data-filter="favorites"]:hover:not(.active) {
+            background: rgba(251,191,36,0.2);
+            border-color: rgba(251,191,36,0.65);
+            color: #fef3c7;
+        }
+
+        /* Favorites Panel */
+        .ae-fav-panel {
+            display: flex; align-items: center; gap: 8px;
+            margin-top: 12px; flex-wrap: wrap;
+            padding: 10px 14px;
+            background: rgba(251,191,36,0.06);
+            border: 1px solid rgba(251,191,36,0.18);
+            border-radius: 12px;
+        }
+        .ae-fav-tabs { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+        .ae-fav-cat-tab {
+            padding: 5px 14px; border-radius: 16px;
+            border: 1px solid rgba(251,191,36,0.2);
+            background: rgba(251,191,36,0.06);
+            color: rgba(255,255,255,0.7); font-size: 12px;
+            cursor: pointer; transition: all 0.25s ease; font-family: inherit;
+            white-space: nowrap;
+        }
+        .ae-fav-cat-tab:hover { background: rgba(251,191,36,0.15); border-color: rgba(251,191,36,0.4); }
+        .ae-fav-cat-tab.active {
+            background: linear-gradient(135deg, #d97706, #f59e0b);
+            border-color: transparent; color: #fff; font-weight: 500;
+            box-shadow: 0 3px 12px rgba(251,191,36,0.3);
+        }
+        .ae-fav-cat-tab.ae-drag-over {
+            background: rgba(251,191,36,0.35) !important;
+            border-color: #fbbf24 !important;
+            box-shadow: 0 0 0 2px rgba(251,191,36,0.4), 0 4px 16px rgba(251,191,36,0.25) !important;
+            transform: scale(1.05);
+        }
+        .ae-fav-manage-btn {
+            padding: 5px 14px; border-radius: 16px;
+            border: 1px solid rgba(148,163,184,0.35);
+            background: rgba(30,41,59,0.5); color: rgba(226,232,240,0.85);
+            font-size: 12px; cursor: pointer; font-family: inherit;
+            transition: all 0.2s ease; white-space: nowrap;
+        }
+        .ae-fav-manage-btn:hover { background: rgba(51,65,85,0.7); border-color: rgba(196,181,253,0.5); }
+
+        /* Drag styles */
+        .ae-card.ae-draggable { cursor: grab; }
+        .ae-card.ae-draggable:active { cursor: grabbing; }
+        .ae-card.ae-dragging { opacity: 0.4; transform: scale(0.95); }
 
         /* Card Info */
         .ae-card-info { padding: 12px 12px 14px; }
@@ -1815,10 +2395,12 @@
                             <span class="ap-now-ep" id="ap-current-ep-label">${entryTitle}</span>
                         </div>
                     </div>
-                    <a class="ap-back-link" href="https://anime1.me/">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M15 18l-6-6 6-6"/></svg>
-                        返回列表
-                    </a>
+                    <div class="ap-header-actions">
+                        <a class="ap-back-link" href="https://anime1.me/">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M15 18l-6-6 6-6"/></svg>
+                            返回列表
+                        </a>
+                    </div>
                 `;
                 headerHost.appendChild(playHeader);
             }
@@ -1837,12 +2419,18 @@
                         </div>
                         <div class="ap-episode-section">
                             <div class="ap-ep-header">
-                                <h2 class="ap-ep-title">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-                                        <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
-                                    </svg>
-                                    選集列表
-                                </h2>
+                                <div style="display:flex; align-items:center; gap:16px;">
+                                    <h2 class="ap-ep-title">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+                                            <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+                                        </svg>
+                                        選集列表
+                                    </h2>
+                                    <button type="button" class="ap-fav-btn ${playCatId && isAnimeFavorited(playCatId) ? 'is-favorited' : ''}" id="ap-fav-btn" data-cat-id="${playCatId}">
+                                        <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+                                        <span class="ap-fav-text">${playCatId && isAnimeFavorited(playCatId) ? '取消收藏' : '加入收藏'}</span>
+                                    </button>
+                                </div>
                                 <span class="ap-ep-count" id="ap-ep-count">載入中...</span>
                             </div>
                             <div class="ap-ep-grid" id="ap-ep-grid">
@@ -1854,6 +2442,22 @@
             </div>
         `;
         main.insertBefore(section, main.firstChild);
+
+        const favBtn = document.getElementById('ap-fav-btn');
+        if (favBtn && playCatId) {
+            favBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (isAnimeFavorited(playCatId)) {
+                    if (confirm(`確定要取消收藏「${animeName}」嗎？`)) {
+                        deleteFavoriteAnime(playCatId);
+                        updateCardFavoriteStar(playCatId);
+                    }
+                } else {
+                    openFavoritesModal({ catId: playCatId, name: animeName });
+                }
+            });
+        }
 
         // Mount current episode's player
         const wrapper = document.getElementById('ap-video-wrapper');
@@ -2281,6 +2885,21 @@
             transition: all 0.25s ease; white-space: nowrap;
         }
         .ap-back-link:hover { background: rgba(51,65,85,0.65); border-color: rgba(196,181,253,0.55); }
+
+        .ap-header-actions {
+            display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+        }
+        .ap-fav-btn {
+            position: static; height: 32px; padding: 0 12px;
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+            border-radius: 999px; background: rgba(15,23,42,0.38); border: 1px solid rgba(148,163,184,0.36);
+            color: #e2e8f0; cursor: pointer; font-size: 13px; font-family: inherit; transition: all 0.25s ease;
+        }
+        .ap-fav-btn:hover { background: rgba(51,65,85,0.65); border-color: rgba(196,181,253,0.55); color: #fbbf24; }
+        .ap-fav-btn.is-favorited { color: #fbbf24; background: rgba(251,191,36,0.15); border-color: rgba(251,191,36,0.35); }
+        .ap-fav-btn.is-favorited:hover { background: rgba(251,191,36,0.25); border-color: rgba(251,191,36,0.5); }
+        .ap-fav-btn svg { fill: none; stroke: currentColor; stroke-width: 1.8; transition: all 0.25s ease; width: 14px; height: 14px; }
+        .ap-fav-btn.is-favorited svg { fill: currentColor; }
 
         .ap-video-wrapper {
             background: #000;
