@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
 // @namespace    https://github.com/zjjscwt/tampermonkey-script
-// @version      2.3.1
-// @description  UI重構+封麵顯示+首頁無限滾動+觀看記錄+播放記憶+選集整合+播放器快捷鍵
-// @author       Ryan,CodeX
+// @version      2.4.1
+// @description  UI重構+封麵顯示+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
+// @author       Ryan
 // @match        https://anime1.me/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -1567,63 +1567,252 @@
     `;
 
     // ===================== PLAY PAGE =====================
-    function isPlayPage() {
+
+    // Detect category archive page (the old "play page")
+    function isCategoryPlayPage() {
         return document.body.classList.contains('archive') &&
             document.body.classList.contains('category') &&
             document.querySelectorAll('article').length > 0;
     }
 
-    function enhancePlayPage() {
+    // Detect single post page (独立播放页, e.g. https://anime1.me/28432)
+    function isSinglePostPage() {
+        return document.body.classList.contains('single') &&
+            document.body.classList.contains('single-post') &&
+            !!document.querySelector('#main > article .vjscontainer');
+    }
+
+    function isPlayPage() {
+        return isCategoryPlayPage() || isSinglePostPage();
+    }
+
+    // Extract post ID from a single post page URL like https://anime1.me/28432
+    function extractPostIdFromUrl(url) {
+        const m = String(url || '').match(/anime1\.me\/(\d+)/);
+        return m ? m[1] : null;
+    }
+
+    // Extract category ID from a single post page's article element
+    function getCategoryIdFromArticle(articleEl) {
+        if (!articleEl) return null;
+        const cls = [...articleEl.classList].find(c => /^category-\d+$/.test(c));
+        if (cls) {
+            const id = parseInt(cls.replace('category-', ''), 10);
+            if (Number.isFinite(id) && id > 0) return id;
+        }
+        // Fallback: look for the "全集連結" link
+        const catLink = articleEl.querySelector('a[href*="?cat="]');
+        if (catLink) {
+            const m = catLink.href.match(/[?&]cat=(\d+)/);
+            if (m) return parseInt(m[1], 10);
+        }
+        return null;
+    }
+
+    // Fetch a single page HTML and parse articles from it
+    function fetchPageArticles(url) {
+        return new Promise(resolve => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: url,
+                onload(res) {
+                    try {
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(res.responseText, 'text/html');
+                        const articles = [...doc.querySelectorAll('#main > article')];
+                        const eps = [];
+                        articles.forEach(art => {
+                            const titleEl = art.querySelector('.entry-title a') || art.querySelector('.entry-title');
+                            if (!titleEl) return;
+                            const title = titleEl.textContent.trim();
+                            const epMatch = title.match(/\[(\d+)\]/);
+                            const epNum = epMatch ? parseInt(epMatch[1]) : null;
+                            const href = titleEl.href || titleEl.closest('a')?.href || '';
+                            const postId = extractPostIdFromUrl(href);
+                            const postUrl = postId ? `https://anime1.me/${postId}` : href;
+                            eps.push({ title, epNum, postUrl, postId });
+                        });
+                        // Check for next page (WordPress post navigation: "上一頁" = older posts = earlier episodes)
+                        const nextLink = doc.querySelector('.nav-previous a');
+                        const nextUrl = nextLink?.getAttribute('href') || null;
+                        resolve({ eps, nextUrl });
+                    } catch {
+                        resolve({ eps: [], nextUrl: null });
+                    }
+                },
+                onerror() { resolve({ eps: [], nextUrl: null }); }
+            });
+        });
+    }
+
+    // Fetch all episodes from a category, handling pagination
+    async function fetchAllCategoryEpisodes(catId) {
+        const allEps = [];
+        let pageUrl = `https://anime1.me/?cat=${catId}`;
+        const maxPages = 20; // safety limit
+        for (let i = 0; i < maxPages; i++) {
+            const { eps, nextUrl } = await fetchPageArticles(pageUrl);
+            allEps.push(...eps);
+            if (!nextUrl) break;
+            pageUrl = nextUrl;
+        }
+        // Assign fallback epNum for episodes that didn't have one
+        allEps.forEach((ep, idx) => {
+            if (!Number.isFinite(ep.epNum)) ep.epNum = allEps.length - idx;
+        });
+        // Reverse to chronological order: [01] first
+        allEps.reverse();
+        return allEps;
+    }
+
+    // Get anime title from single post page (strip episode number suffix)
+    function getAnimeTitleFromSinglePost() {
+        // Try the category tag in the footer of the article
+        const catTag = document.querySelector('#main > article .cat-links a');
+        if (catTag) return catTag.textContent.trim();
+        // Fallback: parse from page title
+        const pageTitle = document.title.replace(/\s*–\s*Anime1\.me.*$/i, '').trim();
+        return pageTitle.replace(/\s*\[\d+\]\s*$/, '').trim();
+    }
+
+    // ---- Category page redirect logic ----
+    function handleCategoryPageRedirect() {
         const articles = [...document.querySelectorAll('#main > article')];
         if (articles.length === 0) return;
 
-        injectCSS(PLAYPAGE_CSS);
+        const catId = getCurrentCategoryId();
+        const pageTitle = document.querySelector('.page-header .page-title')?.textContent?.trim() || '';
+        const storedProgress = getWatchProgressForAnime({ catId, name: pageTitle });
 
-        // Parse episodes
-        const episodes = [];
-        articles.forEach(art => {
-            const titleEl = art.querySelector('.entry-title a');
-            const vjsContainer = art.querySelector('.vjscontainer');
-            if (!titleEl) return;
+        // If we have stored progress, redirect immediately
+        if (storedProgress && storedProgress.postUrl) {
+            const postId = extractPostIdFromUrl(storedProgress.postUrl);
+            if (postId) {
+                location.replace(`https://anime1.me/${postId}`);
+                return;
+            }
+        }
 
-            const title = titleEl.textContent.trim();
-            const epMatch = title.match(/\[(\d+)\]/);
-            const epNum = epMatch ? parseInt(epMatch[1]) : episodes.length + 1;
-            const postUrl = titleEl.href;
+        // No stored progress — need to find episode 1.
+        // Show a loading overlay while we fetch all episode pages.
+        const overlay = document.createElement('div');
+        overlay.id = 'ap-category-loading-overlay';
+        overlay.innerHTML = `
+            <style>
+                #ap-category-loading-overlay {
+                    position: fixed; inset: 0; z-index: 2147483647;
+                    background: linear-gradient(135deg, #0f0a1e 0%, #1a1145 50%, #0d0b2e 100%);
+                    display: flex; flex-direction: column;
+                    align-items: center; justify-content: center;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                }
+                .ap-loading-spinner {
+                    width: 48px; height: 48px;
+                    border: 3px solid rgba(139,92,246,0.15);
+                    border-top-color: #a78bfa;
+                    border-radius: 50%;
+                    animation: ap-spin 0.8s linear infinite;
+                }
+                @keyframes ap-spin { to { transform: rotate(360deg); } }
+                .ap-loading-text {
+                    margin-top: 24px;
+                    color: rgba(255,255,255,0.75);
+                    font-size: 16px; font-weight: 400;
+                    letter-spacing: 0.5px;
+                    animation: ap-text-pulse 1.8s ease-in-out infinite;
+                }
+                @keyframes ap-text-pulse {
+                    0%, 100% { opacity: 0.55; }
+                    50% { opacity: 1; }
+                }
+                .ap-loading-sub {
+                    margin-top: 10px;
+                    color: rgba(255,255,255,0.35);
+                    font-size: 13px;
+                }
+            </style>
+            <div class="ap-loading-spinner"></div>
+            <div class="ap-loading-text">加載整理中，請稍後...</div>
+            <div class="ap-loading-sub">正在獲取完整選集列表</div>
+        `;
+        document.body.appendChild(overlay);
 
-            episodes.push({ title, epNum, postUrl, vjsContainer });
-        });
-
-        episodes.reverse(); // Chronological order: [01] first
-
-        // Keep original players hidden; only one real player node is mounted into wrapper at a time.
-        episodes.forEach(ep => {
-            if (ep.vjsContainer) {
-                ep.vjsContainer._originalParent = ep.vjsContainer.parentElement;
-                ep.vjsContainer.style.display = 'none';
+        // Fetch all episodes from the category (handles pagination automatically)
+        fetchAllCategoryEpisodes(catId).then(episodes => {
+            if (episodes.length > 0) {
+                // episodes is in chronological order ([01] first), so episodes[0] is ep 1
+                const ep1 = episodes[0];
+                const postId = extractPostIdFromUrl(ep1.postUrl);
+                if (postId) {
+                    location.replace(`https://anime1.me/${postId}`);
+                    return;
+                }
+                // Fallback: use the URL directly
+                location.replace(ep1.postUrl);
+            } else {
+                // Fallback: redirect to the first article link on the page (latest episode)
+                const firstLink = articles[0]?.querySelector('.entry-title a');
+                if (firstLink) location.replace(firstLink.href);
             }
         });
+    }
 
-        if (episodes.length === 0) return;
+    // ---- Single post page enhancement ----
+    function enhancePlayPage() {
+        // If on category page, redirect to single post page
+        if (isCategoryPlayPage()) {
+            handleCategoryPageRedirect();
+            return;
+        }
 
-        const pageTitle = document.querySelector('.page-header .page-title')?.textContent?.trim() || '';
-        const playCatId = getCurrentCategoryId();
-        const main = document.getElementById('main');
+        // We are on a single post page
+        const article = document.querySelector('#main > article');
+        if (!article) return;
+
+        injectCSS(PLAYPAGE_CSS);
+
+        const vjsContainer = article.querySelector('.vjscontainer');
+        const catId = getCategoryIdFromArticle(article);
+        const currentPostId = extractPostIdFromUrl(location.href);
+        const currentPostUrl = currentPostId ? `https://anime1.me/${currentPostId}` : location.href;
+
+        // Parse current episode info from the article
+        const entryTitle = article.querySelector('.entry-title')?.textContent?.trim() || '';
+        const currentEpMatch = entryTitle.match(/\[(\d+)\]/);
+        const currentEpNum = currentEpMatch ? parseInt(currentEpMatch[1]) : null;
+
+        const animeName = getAnimeTitleFromSinglePost();
+        const playCatId = catId || getCurrentCategoryId();
+
+        // Hide original article content but keep comments
+        article.style.display = 'none';
+        document.querySelectorAll('#main > #ad-1, #main > #ad-2').forEach(el => el.style.display = 'none');
+
+        // Full width layout
+        const secondary = document.querySelector('#secondary');
+        if (secondary) secondary.style.display = 'none';
         const primaryDiv = document.getElementById('primary');
+        if (primaryDiv) primaryDiv.style.cssText = 'width:100%!important;max-width:1100px!important;margin:0 auto!important;float:none!important;';
+        const siteContent = document.querySelector('.site-content');
+        if (siteContent) siteContent.style.cssText = 'max-width:1200px!important;margin:0 auto!important;padding:0!important;';
 
-        // Move play title/info into site header and hide default site title on play page
+        // Move play title/info into site header
         const headerHost = document.querySelector('#masthead .header-content') || document.querySelector('#masthead');
         if (headerHost) {
+            // Hide default site title
+            const siteBranding = headerHost.querySelector('#site-branding');
+            if (siteBranding) siteBranding.style.display = 'none';
+
             let playHeader = headerHost.querySelector('#ap-play-header-panel');
             if (!playHeader) {
                 playHeader = document.createElement('div');
                 playHeader.id = 'ap-play-header-panel';
                 playHeader.innerHTML = `
                     <div class="ap-header-main">
-                        <h1 class="ap-anime-title">${pageTitle}</h1>
+                        <h1 class="ap-anime-title">${animeName}</h1>
                         <div class="ap-now-playing">
                             <span class="ap-now-label">正在播放</span>
-                            <span class="ap-now-ep" id="ap-current-ep-label"></span>
+                            <span class="ap-now-ep" id="ap-current-ep-label">${entryTitle}</span>
                         </div>
                     </div>
                     <a class="ap-back-link" href="https://anime1.me/">
@@ -1632,24 +1821,11 @@
                     </a>
                 `;
                 headerHost.appendChild(playHeader);
-            } else {
-                const titleNode = playHeader.querySelector('.ap-anime-title');
-                if (titleNode) titleNode.textContent = pageTitle;
             }
         }
 
-        // Hide original content
-        articles.forEach(a => a.style.display = 'none');
-        document.querySelectorAll('#main > .pagination, #main > nav').forEach(el => el.style.display = 'none');
-
-        // Full width
-        const secondary = document.querySelector('#secondary');
-        if (secondary) secondary.style.display = 'none';
-        if (primaryDiv) primaryDiv.style.cssText = 'width:100%!important;max-width:1100px!important;margin:0 auto!important;float:none!important;';
-        const siteContent = document.querySelector('.site-content');
-        if (siteContent) siteContent.style.cssText = 'max-width:1200px!important;margin:0 auto!important;padding:0!important;';
-
         // Build player UI
+        const main = document.getElementById('main');
         const section = document.createElement('div');
         section.className = 'ap-player-section';
         section.innerHTML = `
@@ -1667,9 +1843,11 @@
                                     </svg>
                                     選集列表
                                 </h2>
-                                <span class="ap-ep-count">共 ${episodes.length} 集</span>
+                                <span class="ap-ep-count" id="ap-ep-count">載入中...</span>
                             </div>
-                            <div class="ap-ep-grid" id="ap-ep-grid"></div>
+                            <div class="ap-ep-grid" id="ap-ep-grid">
+                                <div class="ap-ep-loading">正在載入選集列表...</div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1677,121 +1855,17 @@
         `;
         main.insertBefore(section, main.firstChild);
 
-        // Render episode buttons
-        const epGrid = document.getElementById('ap-ep-grid');
-        episodes.forEach((ep, idx) => {
-            const btn = document.createElement('button');
-            btn.className = 'ap-ep-btn';
-            btn.dataset.index = idx;
-            btn.textContent = String(ep.epNum).padStart(2, '0');
-            btn.title = ep.title;
-            btn.addEventListener('click', () => switchEp(idx));
-            epGrid.appendChild(btn);
-        });
+        // Mount current episode's player
+        const wrapper = document.getElementById('ap-video-wrapper');
+        if (vjsContainer) {
+            vjsContainer.style.display = '';
+            wrapper.appendChild(vjsContainer);
+        }
 
-        let currentIdx = 0;
-        let mountedVjs = null;
-        let playPoster = null;
-        let trackedVideo = null;
-        let saveHandlers = null;
-        let lastProgressSaveAt = 0;
-        let lastProgressSec = -1;
+        // Web fullscreen
         let webFullscreenActive = false;
         let webFullscreenShortcutBound = false;
         const WEB_FULLSCREEN_CLASS = 'ae-web-fullscreen';
-        const storedProgress = getWatchProgressForAnime({ catId: playCatId, name: pageTitle });
-        let pendingResume = (storedProgress && Number.isFinite(storedProgress.positionSec))
-            ? {
-                postUrl: storedProgress.postUrl || '',
-                lastEpisode: storedProgress.lastEpisode || null,
-                positionSec: storedProgress.positionSec
-            }
-            : null;
-
-        function pauseVideoIn(container) {
-            if (!container) return;
-            const video = container.querySelector('video');
-            if (!video) return;
-            try { video.pause(); } catch { /* ignore */ }
-        }
-
-        function applyEpisodePoster(container, posterUrl) {
-            if (!container || !posterUrl) return;
-            const videoJsRoot = container.querySelector('.video-js');
-            const video = container.querySelector('video');
-            const posterEl = container.querySelector('.vjs-poster');
-
-            if (videoJsRoot) videoJsRoot.setAttribute('poster', posterUrl);
-            if (video) video.setAttribute('poster', posterUrl);
-            if (posterEl) posterEl.style.backgroundImage = `url("${posterUrl}")`;
-        }
-
-        function persistPlaybackProgress(force = false) {
-            if (!mountedVjs) return;
-            const video = mountedVjs.querySelector('video');
-            const ep = episodes[currentIdx];
-            if (!video || !ep) return;
-            const now = Date.now();
-            const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-            const duration = Number.isFinite(video.duration) ? video.duration : null;
-            const sec = Math.max(0, Math.floor(currentTime));
-            if (!force) {
-                if (sec === lastProgressSec) return;
-                if (now - lastProgressSaveAt < 5000) return;
-            }
-            saveWatchProgress({
-                catId: playCatId,
-                animeName: pageTitle,
-                epNum: Number.isFinite(ep.epNum) ? ep.epNum : (currentIdx + 1),
-                epTitle: ep.title,
-                postUrl: ep.postUrl,
-                positionSec: sec,
-                durationSec: duration
-            });
-            lastProgressSaveAt = now;
-            lastProgressSec = sec;
-        }
-
-        function unbindVideoProgress() {
-            if (!trackedVideo || !saveHandlers) return;
-            trackedVideo.removeEventListener('timeupdate', saveHandlers.onTimeUpdate);
-            trackedVideo.removeEventListener('pause', saveHandlers.onPause);
-            trackedVideo.removeEventListener('ended', saveHandlers.onEnded);
-            trackedVideo.removeEventListener('seeking', saveHandlers.onSeeking);
-            trackedVideo = null;
-            saveHandlers = null;
-        }
-
-        function bindVideoProgress(video) {
-            if (!video || trackedVideo === video) return;
-            unbindVideoProgress();
-            saveHandlers = {
-                onTimeUpdate: () => persistPlaybackProgress(false),
-                onPause: () => persistPlaybackProgress(true),
-                onEnded: () => persistPlaybackProgress(true),
-                onSeeking: () => persistPlaybackProgress(true)
-            };
-            trackedVideo = video;
-            video.addEventListener('timeupdate', saveHandlers.onTimeUpdate);
-            video.addEventListener('pause', saveHandlers.onPause);
-            video.addEventListener('ended', saveHandlers.onEnded);
-            video.addEventListener('seeking', saveHandlers.onSeeking);
-        }
-
-        function restorePlaybackTime(video, seconds) {
-            if (!video || !Number.isFinite(seconds) || seconds <= 1) return;
-            const seek = () => {
-                const duration = Number.isFinite(video.duration) ? video.duration : null;
-                const target = duration ? Math.min(seconds, Math.max(0, duration - 1.5)) : seconds;
-                if (target <= 0) return;
-                try { video.currentTime = target; } catch { /* ignore */ }
-            };
-            if (video.readyState >= 1) {
-                seek();
-            } else {
-                video.addEventListener('loadedmetadata', seek, { once: true });
-            }
-        }
 
         function syncWebFullscreenButtons() {
             document.querySelectorAll('.ae-webfs-btn').forEach((btn) => {
@@ -1866,101 +1940,177 @@
             webFullscreenShortcutBound = true;
         }
 
-        function switchEp(index) {
-            if (index < 0 || index >= episodes.length) return;
-            currentIdx = index;
-            const ep = episodes[index];
+        // Apply web fullscreen control and poster to current player
+        if (vjsContainer) {
+            ensureWebFullscreenControl(vjsContainer);
+        }
+        bindWebFullscreenShortcut();
 
-            // Update buttons
-            epGrid.querySelectorAll('.ap-ep-btn').forEach((btn, i) => btn.classList.toggle('active', i === index));
-            document.getElementById('ap-current-ep-label').textContent = ep.title;
+        // Progress tracking for current video
+        let trackedVideo = null;
+        let saveHandlers = null;
+        let lastProgressSaveAt = 0;
+        let lastProgressSec = -1;
 
-            // Pause every episode player first to prevent background playback.
-            episodes.forEach(item => pauseVideoIn(item.vjsContainer));
-            persistPlaybackProgress(true);
-
-            // Unmount previous mounted player node.
-            const wrapper = document.getElementById('ap-video-wrapper');
-            if (mountedVjs && mountedVjs !== ep.vjsContainer && mountedVjs._originalParent) {
-                mountedVjs.style.display = 'none';
-                mountedVjs._originalParent.appendChild(mountedVjs);
+        function persistPlaybackProgress(force = false) {
+            const video = vjsContainer?.querySelector('video');
+            if (!video) return;
+            const now = Date.now();
+            const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+            const duration = Number.isFinite(video.duration) ? video.duration : null;
+            const sec = Math.max(0, Math.floor(currentTime));
+            if (!force) {
+                if (sec === lastProgressSec) return;
+                if (now - lastProgressSaveAt < 5000) return;
             }
-            wrapper.innerHTML = '';
-
-            if (ep.vjsContainer) {
-                ep.vjsContainer.style.display = '';
-                wrapper.appendChild(ep.vjsContainer);
-                mountedVjs = ep.vjsContainer;
-                applyEpisodePoster(ep.vjsContainer, playPoster);
-                ensureWebFullscreenControl(ep.vjsContainer);
-                const video = ep.vjsContainer.querySelector('video');
-                if (video) {
-                    bindVideoProgress(video);
-                    const shouldResume = pendingResume &&
-                        ((pendingResume.postUrl && pendingResume.postUrl === ep.postUrl) ||
-                            (Number.isFinite(pendingResume.lastEpisode) && pendingResume.lastEpisode === ep.epNum));
-                    if (shouldResume) {
-                        restorePlaybackTime(video, pendingResume.positionSec);
-                        pendingResume = null;
-                    }
-                }
-            }
-
             saveWatchProgress({
                 catId: playCatId,
-                animeName: pageTitle,
-                epNum: Number.isFinite(ep.epNum) ? ep.epNum : (index + 1),
-                epTitle: ep.title,
-                postUrl: ep.postUrl
+                animeName: animeName,
+                epNum: currentEpNum || 1,
+                epTitle: entryTitle,
+                postUrl: currentPostUrl,
+                positionSec: sec,
+                durationSec: duration
             });
-
-            // Scroll
-            const activeBtn = epGrid.querySelector('.ap-ep-btn.active');
-            activeBtn?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            lastProgressSaveAt = now;
+            lastProgressSec = sec;
         }
 
-        function centerPlayerOnOpen() {
-            const wrapper = document.getElementById('ap-video-wrapper');
-            if (!wrapper) return;
-            const rect = wrapper.getBoundingClientRect();
-            const targetY = window.scrollY + rect.top - Math.max(0, (window.innerHeight - rect.height) / 2);
-            window.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+        function bindVideoProgress(video) {
+            if (!video || trackedVideo === video) return;
+            if (trackedVideo && saveHandlers) {
+                trackedVideo.removeEventListener('timeupdate', saveHandlers.onTimeUpdate);
+                trackedVideo.removeEventListener('pause', saveHandlers.onPause);
+                trackedVideo.removeEventListener('ended', saveHandlers.onEnded);
+                trackedVideo.removeEventListener('seeking', saveHandlers.onSeeking);
+            }
+            saveHandlers = {
+                onTimeUpdate: () => persistPlaybackProgress(false),
+                onPause: () => persistPlaybackProgress(true),
+                onEnded: () => persistPlaybackProgress(true),
+                onSeeking: () => persistPlaybackProgress(true)
+            };
+            trackedVideo = video;
+            video.addEventListener('timeupdate', saveHandlers.onTimeUpdate);
+            video.addEventListener('pause', saveHandlers.onPause);
+            video.addEventListener('ended', saveHandlers.onEnded);
+            video.addEventListener('seeking', saveHandlers.onSeeking);
         }
 
-        // Start from first episode by default, but still respect URL-specified episode.
-        let startIdx = 0;
-        const urlP = new URLSearchParams(location.search).get('p');
-        if (urlP) {
-            const found = episodes.findIndex(ep => ep.postUrl.includes('/' + urlP));
-            if (found >= 0) startIdx = found;
-        } else if (storedProgress) {
-            const byUrl = storedProgress.postUrl
-                ? episodes.findIndex(ep => ep.postUrl === storedProgress.postUrl)
-                : -1;
-            if (byUrl >= 0) {
-                startIdx = byUrl;
-            } else if (Number.isFinite(storedProgress.lastEpisode)) {
-                const byEp = episodes.findIndex(ep => ep.epNum === storedProgress.lastEpisode);
-                if (byEp >= 0) startIdx = byEp;
+        function restorePlaybackTime(video, seconds) {
+            if (!video || !Number.isFinite(seconds) || seconds <= 1) return;
+            const seek = () => {
+                const duration = Number.isFinite(video.duration) ? video.duration : null;
+                const target = duration ? Math.min(seconds, Math.max(0, duration - 1.5)) : seconds;
+                if (target <= 0) return;
+                try { video.currentTime = target; } catch { /* ignore */ }
+            };
+            if (video.readyState >= 1) {
+                seek();
+            } else {
+                video.addEventListener('loadedmetadata', seek, { once: true });
             }
         }
-        switchEp(startIdx);
-        bindWebFullscreenShortcut();
-        requestAnimationFrame(() => {
-            setTimeout(centerPlayerOnOpen, 60);
+
+        // Bind progress tracking and restore playback position
+        const videoEl = vjsContainer?.querySelector('video');
+        if (videoEl) {
+            bindVideoProgress(videoEl);
+            const storedProgress = getWatchProgressForAnime({ catId: playCatId, name: animeName });
+            if (storedProgress && Number.isFinite(storedProgress.positionSec) && storedProgress.postUrl === currentPostUrl) {
+                restorePlaybackTime(videoEl, storedProgress.positionSec);
+            }
+        }
+
+        // Save initial progress record
+        saveWatchProgress({
+            catId: playCatId,
+            animeName: animeName,
+            epNum: currentEpNum || 1,
+            epTitle: entryTitle,
+            postUrl: currentPostUrl
         });
+
         window.addEventListener('beforeunload', () => persistPlaybackProgress(true));
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') persistPlaybackProgress(true);
         });
 
-        // Fetch banner
-        if (pageTitle) {
-            searchTmdb(pageTitle).then(data => {
+        // Scroll player into view
+        requestAnimationFrame(() => {
+            setTimeout(() => {
+                const w = document.getElementById('ap-video-wrapper');
+                if (!w) return;
+                const rect = w.getBoundingClientRect();
+                const targetY = window.scrollY + rect.top - Math.max(0, (window.innerHeight - rect.height) / 2);
+                window.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+            }, 60);
+        });
+
+        // Make comments section visible and styled
+        const commentsSection = document.getElementById('comments') || document.querySelector('.comments-area');
+        if (commentsSection) {
+            commentsSection.style.display = '';
+            // Move comments after the player section if needed
+            const playerSection = document.querySelector('.ap-player-section');
+            if (playerSection && commentsSection.parentElement === article) {
+                // Detach from hidden article and place after player
+                playerSection.parentElement.insertBefore(commentsSection, playerSection.nextSibling);
+            }
+        }
+
+        // Fetch TMDB banner/poster
+        let playPoster = null;
+        if (animeName) {
+            searchTmdb(animeName).then(data => {
                 const heroImage = data?.banner || data?.poster || null;
-                if (heroImage) {
+                if (heroImage && vjsContainer) {
                     playPoster = heroImage;
-                    applyEpisodePoster(mountedVjs, playPoster);
+                    const videoJsRoot = vjsContainer.querySelector('.video-js');
+                    const vid = vjsContainer.querySelector('video');
+                    const posterEl = vjsContainer.querySelector('.vjs-poster');
+                    if (videoJsRoot) videoJsRoot.setAttribute('poster', heroImage);
+                    if (vid) vid.setAttribute('poster', heroImage);
+                    if (posterEl) posterEl.style.backgroundImage = `url("${heroImage}")`;
+                }
+            });
+        }
+
+        // ---- Fetch all episodes from category in background ----
+        if (playCatId) {
+            fetchAllCategoryEpisodes(playCatId).then(episodes => {
+                const epGrid = document.getElementById('ap-ep-grid');
+                const epCount = document.getElementById('ap-ep-count');
+                if (!epGrid) return;
+
+                epGrid.innerHTML = '';
+                if (epCount) epCount.textContent = `共 ${episodes.length} 集`;
+
+                episodes.forEach((ep) => {
+                    const isCurrent = ep.postUrl === currentPostUrl ||
+                        (ep.postId && ep.postId === currentPostId) ||
+                        (Number.isFinite(ep.epNum) && ep.epNum === currentEpNum);
+
+                    const btn = document.createElement('button');
+                    btn.className = 'ap-ep-btn' + (isCurrent ? ' active' : '');
+                    btn.textContent = Number.isFinite(ep.epNum) ? String(ep.epNum).padStart(2, '0') : '??';
+                    btn.title = ep.title;
+                    btn.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        if (isCurrent) return; // Already on this episode
+                        // Save progress before navigating away
+                        persistPlaybackProgress(true);
+                        location.href = ep.postUrl;
+                    });
+                    epGrid.appendChild(btn);
+                });
+
+                // Scroll active button into view
+                const activeBtn = epGrid.querySelector('.ap-ep-btn.active');
+                if (activeBtn) {
+                    requestAnimationFrame(() => {
+                        activeBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+                    });
                 }
             });
         }
@@ -2243,6 +2393,18 @@
             grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
             gap: 8px;
         }
+        .ap-ep-loading {
+            grid-column: 1 / -1;
+            text-align: center;
+            padding: 20px;
+            color: rgba(255,255,255,0.5);
+            font-size: 14px;
+            animation: ap-pulse 1.5s ease-in-out infinite;
+        }
+        @keyframes ap-pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
         .ap-ep-btn {
             width: 100%;
             min-width: 0;
@@ -2257,6 +2419,14 @@
             background: linear-gradient(135deg, #7c3aed, #a855f7);
             border-color: transparent; color: #fff; font-weight: 600;
             box-shadow: 0 4px 15px rgba(139,92,246,0.4); transform: scale(1.05);
+            cursor: default;
+        }
+
+        /* Comments section styling on single post page */
+        .single-post .comments-area {
+            max-width: 1100px;
+            margin: 20px auto;
+            padding: 0 16px;
         }
 
         @media (max-width: 1024px) {
@@ -2280,7 +2450,16 @@
             body.archive.category #main,
             body.archive.category .ap-player-section,
             body.archive.category .ap-main-layout,
-            body.archive.category .ap-player-column {
+            body.archive.category .ap-player-column,
+            body.single.single-post,
+            body.single.single-post #page,
+            body.single.single-post #content,
+            body.single.single-post .site-content,
+            body.single.single-post #primary,
+            body.single.single-post #main,
+            body.single.single-post .ap-player-section,
+            body.single.single-post .ap-main-layout,
+            body.single.single-post .ap-player-column {
                 width: 100% !important;
                 max-width: 100% !important;
                 margin-left: 0 !important;
@@ -2288,7 +2467,8 @@
                 padding-left: 0 !important;
                 padding-right: 0 !important;
             }
-            body.archive.category .site-content {
+            body.archive.category .site-content,
+            body.single.single-post .site-content {
                 padding-left: 0 !important;
                 padding-right: 0 !important;
             }
@@ -2311,6 +2491,7 @@
                 grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
             }
             .ap-ep-btn { height: 36px; font-size: 13px; }
+            .single-post .comments-area { padding: 0 8px; }
         }
     `;
 
