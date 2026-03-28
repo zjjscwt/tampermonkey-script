@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.0.0
+// @version      3.0.1
 // @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
@@ -11,6 +11,7 @@
 // @connect      image.tmdb.org
 // @connect      anime1.me
 // @run-at       document-idle
+// @icon         https://anime1.me/favicon-32x32.png
 // @license      MIT
 // ==/UserScript==
 
