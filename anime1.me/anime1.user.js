@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.1.0
+// @version      3.3.0
 // @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
@@ -72,8 +72,20 @@
                 <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
                 <h2 class="ae-modal-title" id="ae-modal-title">Anime1 增強設定</h2>
                 <div class="ae-modal-field">
-                    <p style="font-size:13px; color:var(--ae-text-secondary); line-height:1.6; margin-bottom:12px;">自定義主題色功能待更新</p>
-                    <p style="font-size:12px; color:var(--ae-text-muted);">更多功能正在開發中...</p>
+                    <p style="font-size:13px; color:var(--ae-text-secondary); line-height:1.6; margin-bottom:12px;">已成功切換至 Bangumi (BGM.tv) 封面源，無需手動設定 API Key。</p>
+                    <div class="ae-modal-shortcuts">
+                        <h3>播放器快捷鍵說明：</h3>
+                        <ul>
+                            <li><b>W</b>：切換/退出 網頁全屏</li>
+                            <li><b>S 鍵</b>：輪流切換播放倍速</li>
+                            <li><b>S + ↑ / ↓</b>：微調倍速 (+/- 0.1x)</li>
+                            <li><b>Space</b>：播放 / 暫停</li>
+                            <li><b>F</b>：進入 / 退出 系統全屏</li>
+                            <li><b>M</b>：靜音 / 取消靜音</li>
+                            <li><b>← / →</b>：快退 / 快進 5 秒</li>
+                            <li><b>↑ / ↓</b>：增加 / 減少 音量</li>
+                        </ul>
+                    </div>
                 </div>
                 <div id="ae-modal-status" class="ae-modal-status"></div>
                 <div class="ae-modal-actions">
@@ -128,6 +140,38 @@
         const style = document.createElement('style');
         style.textContent = css;
         document.head.appendChild(style);
+    }
+
+    let toastTimer = null;
+    function showToast(message, iconSvg = '') {
+        // Find the player root element (the one that actually goes fullscreen)
+        const player = document.querySelector('.video-js') || document.querySelector('.vjscontainer');
+        const parent = player || document.body;
+        let toast = document.getElementById('ae-global-toast');
+
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'ae-global-toast';
+            toast.className = 'ae-toast';
+            parent.appendChild(toast);
+        } else if (toast.parentElement !== parent) {
+            // Re-mount if parent changed (e.g. entering player page)
+            parent.appendChild(toast);
+        }
+
+        toast.innerHTML = (iconSvg ? `<span class="ae-toast-icon">${iconSvg}</span>` : '') + `<span>${message}</span>`;
+        toast.classList.add('is-visible');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove('is-visible'), 1600);
+    }
+
+    function formatTime(seconds) {
+        if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     }
 
     function forceDarkMode() {
@@ -472,7 +516,7 @@
         }
 
         const data = await bgmRequest('/search/subjects', body);
-        
+
         // If data is null (cancelled/error), just exit without caching failure
         if (!data) return null;
 
@@ -483,7 +527,7 @@
                 score: media.rating?.score || null,
                 title: media.name_cn || media.name || animeName
             };
-            
+
             // Only cache if we actually found a poster URL
             if (result.poster) {
                 setCachedData(animeName, result);
@@ -612,6 +656,29 @@
         .ae-fav-star svg { fill: none; stroke: currentColor; stroke-width: 1.8; transition: 0.25s; }
         .ae-fav-star:hover, .ae-fav-star.is-favorited { color: var(--ae-gold); background: rgba(0,0,0,0.75); }
         .ae-fav-star:hover svg, .ae-fav-star.is-favorited svg { fill: currentColor; stroke: currentColor; }
+
+        /* Unified Shortcut Help Styles */
+        .ae-modal-shortcuts { margin-top:16px; border-top:1px solid var(--ae-border-light); padding-top:12px; }
+        .ae-modal-shortcuts h3 { font-size:14px; color:#ddd6fe; margin-bottom:10px; font-weight:600; }
+        .ae-modal-shortcuts ul { font-size:12px; color:var(--ae-text-secondary); list-style:none; padding:0; margin:0; line-height:2.0; }
+        .ae-modal-shortcuts b { color:var(--ae-primary); font-weight:700; width:65px; display:inline-block; font-family: inherit; }
+
+        /* Global Toast */
+        .ae-toast {
+            position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(20px);
+            padding: 10px 24px; border-radius: 999px; font-size: 14px; font-weight: 600;
+            background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(12px);
+            border: 1px solid rgba(var(--ae-primary-rgb), 0.45); color: #fff;
+            box-shadow: 0 15px 45px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.1);
+            z-index: 2147483647; pointer-events: none; opacity: 0;
+            transition: all 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+            display: flex; align-items: center; gap: 10px;
+        }
+        .ae-toast.is-visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+        .ae-toast-icon { display: flex; align-items: center; color: var(--ae-primary); }
+
+        /* Fullscreen Support: Must be inside the element that requests fullscreen (the .video-js div) */
+        .video-js .ae-toast { position: absolute; bottom: 85px; z-index: 2147483647 !important; }
     `);
 
     // ===================== HOMEPAGE =====================
@@ -1706,6 +1773,7 @@
         let webFullscreenActive = false;
         let webFullscreenShortcutBound = false;
         const WEB_FULLSCREEN_CLASS = 'ae-web-fullscreen';
+        let isSDown = false;
 
         function syncWebFullscreenButtons() {
             document.querySelectorAll('.ae-webfs-btn').forEach((btn) => {
@@ -1758,6 +1826,9 @@
 
         function bindWebFullscreenShortcut() {
             if (webFullscreenShortcutBound) return;
+
+            const speedIcon = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M13 12l-3-2v4l3-2z"/><path d="M17 12l-3-2v4l3-2z"/></svg>';
+
             const onKeydown = (e) => {
                 const target = e.target;
                 const isEditable = !!(target && (
@@ -1766,17 +1837,95 @@
                     target.isContentEditable
                 ));
                 if (isEditable) return;
-                if ((e.key === 'w' || e.key === 'W') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+
+                const video = document.querySelector('.video-js video');
+
+                // Track S key state
+                if (e.key === 's' || e.key === 'S') {
+                    isSDown = true;
+                    // Cycling speeds logic (only if not a repeat keydown event)
+                    if (!e.repeat && video) {
+                        const rates = [1.0, 1.25, 1.5, 2.0, 0.75, 0.5];
+                        let next = rates[0];
+                        const current = video.playbackRate;
+                        for (let i = 0; i < rates.length; i++) {
+                            if (Math.abs(current - rates[i]) < 0.01) {
+                                next = rates[(i + 1) % rates.length];
+                                break;
+                            }
+                        }
+                        video.playbackRate = next;
+                        showToast(`速度: ${next}x`, speedIcon);
+                    }
+                }
+
+                if (!video) return;
+
+                // S + Up/Down for fine speed adjustment
+                if (isSDown && e.key === 'ArrowUp') {
                     e.preventDefault();
-                    setWebFullscreen(!webFullscreenActive);
+                    video.playbackRate = Math.min(4.0, Math.round((video.playbackRate + 0.1) * 10) / 10);
+                    showToast(`速度: ${video.playbackRate}x`, speedIcon);
                     return;
                 }
+                if (isSDown && e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    video.playbackRate = Math.max(0.1, Math.round((video.playbackRate - 0.1) * 10) / 10);
+                    showToast(`速度: ${video.playbackRate}x`, speedIcon);
+                    return;
+                }
+
+                // Web Fullscreen W key
+                if ((e.key === 'w' || e.key === 'W') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    e.preventDefault();
+                    const active = !webFullscreenActive;
+                    setWebFullscreen(active);
+                    showToast(active ? '進入網頁全屏' : '退出網頁全屏',
+                        `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 15v6h-6M3 9V3h6"/></svg>`);
+                    return;
+                }
+
+                // Escape key
                 if (e.key === 'Escape' && webFullscreenActive) {
                     e.preventDefault();
                     setWebFullscreen(false);
+                    showToast('退出網頁全屏', `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 15v6h-6M3 9V3h6"/></svg>`);
+                    return;
+                }
+
+                // Normal Arrow/Space/M hotkeys
+                if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                    setTimeout(() => {
+                        const vol = Math.round(video.volume * 100);
+                        const icon = vol === 0 ? '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6"/></svg>' : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>';
+                        showToast(`音量: ${vol}%`, icon);
+                    }, 50);
+                } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                    setTimeout(() => {
+                        showToast(`進度: ${formatTime(video.currentTime)} / ${formatTime(video.duration)}`,
+                            '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>');
+                    }, 50);
+                } else if (e.key === ' ') { // Space
+                    setTimeout(() => {
+                        const isPaused = video.paused;
+                        showToast(isPaused ? '暫停' : '播放',
+                            isPaused ? '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>' : '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M5 3l14 9-14 9V3z"/></svg>');
+                    }, 50);
+                } else if (e.key === 'm' || e.key === 'M') {
+                    setTimeout(() => {
+                        const isMuted = video.muted;
+                        showToast(isMuted ? '靜音: 開' : '靜音: 關',
+                            isMuted ? '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6"/></svg>' : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5zM15.54 8.46a5 5 0 010 7.07"/></svg>');
+                    }, 50);
                 }
             };
+
+            const onKeyup = (e) => {
+                if (e.key === 's' || e.key === 'S') isSDown = false;
+            };
+
             document.addEventListener('keydown', onKeydown);
+            document.addEventListener('keyup', onKeyup);
             webFullscreenShortcutBound = true;
         }
 
@@ -1911,7 +2060,7 @@
                     if (vid) vid.setAttribute('poster', heroImage);
                     if (posterEl) posterEl.style.backgroundImage = `url("${heroImage}")`;
                 }
-            }).catch(() => {});
+            }).catch(() => { });
         }
 
         // ---- Fetch all episodes from category in background ----
