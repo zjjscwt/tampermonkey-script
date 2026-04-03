@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.5.0
+// @version      3.6.0
 // @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
@@ -9,8 +9,8 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_listValues
-// @connect      api.bgm.tv
 // @connect      *.bgm.tv
+// @connect      api.bgm.tv
 // @connect      anime1.me
 // @run-at       document-start
 // @icon         https://anime1.me/favicon-32x32.png
@@ -735,7 +735,7 @@
             console.log('[Anime1 Enhancer] 正在请求 animelist.json...');
             const jsonData = await fetchAnimeList();
             console.log('[Anime1 Enhancer] 数据获取成功，项数:', jsonData?.length);
-            
+
             if (!Array.isArray(jsonData)) {
                 throw new Error('返回的数据格式不正确');
             }
@@ -749,7 +749,7 @@
                     let year = String(item[3] || '');
                     let season = String(item[4] || '');
                     let sub = item[5] || '';
-                    let externalUrl = item[6] || ''; 
+                    let externalUrl = item[6] || '';
 
                     // --- Advanced Parse for names with HTML ---
                     let name = rawNameHtml;
@@ -809,7 +809,7 @@
 
         // --- Data Extraction for Dropdowns ---
         const years = [...new Set(animeList.map(a => a.year))].filter(Boolean).sort().reverse();
-        const subs = [...new Set(animeList.map(a => a.sub))].filter(Boolean).sort((a,b) => a.localeCompare(b));
+        const subs = [...new Set(animeList.map(a => a.sub))].filter(Boolean).sort((a, b) => a.localeCompare(b));
 
         // Build UI
         const container = document.getElementById('anime-enhanced-home');
@@ -895,7 +895,7 @@
         let currentSub = '';
         let currentSortMode = 'newest';
         let currentFavCategory = '';
-        
+
         let continueMetaByCat = new Map();
         let renderCursor = 0;
         let loadingMore = false;
@@ -975,7 +975,7 @@
 
                 // Dimension 2: Status Filter (Airing/Completed)
                 const isAiring = a.episodes.includes('連載中');
-                const matchesStatus = currentStatus === 'all' || 
+                const matchesStatus = currentStatus === 'all' ||
                     (currentStatus === 'airing' && isAiring) ||
                     (currentStatus === 'completed' && !isAiring);
 
@@ -1105,7 +1105,7 @@
                                         const bytes = new Uint8Array(response.response); let binary = '';
                                         for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
                                         showImage(`data:${response.responseHeaders?.match(/content-type:\s*([^\r\n;]+)/i)?.[1] || 'image/jpeg'};base64,${btoa(binary)}`);
-                                    } catch (e) {}
+                                    } catch (e) { }
                                 }
                             }
                         });
@@ -1198,7 +1198,7 @@
                     try {
                         const info = JSON.parse(e.dataTransfer.getData('text/plain'));
                         if (info.catId && info.fromCategory && cat.id !== info.fromCategory) { moveAnimeToCategory(info.catId, info.fromCategory, cat.id); filterAndRender(); }
-                    } catch {}
+                    } catch { }
                 };
                 tabsContainer.appendChild(tab);
             });
@@ -1290,7 +1290,7 @@
                     listEl.appendChild(addRow); const input = addRow.querySelector('input'); input.focus();
                     const doAdd = () => { const name = input.value.trim(); if (name) addFavoriteCategory(name); listEl.innerHTML = buildCatList(); };
                     addRow.querySelector('.ae-fav-confirm-add-btn').addEventListener('click', doAdd);
-                    addRow.querySelector('.ae-fav-cancel-add-btn').addEventListener('click', () => listEl.innerHTML = buildCatList());
+                    addRow.querySelector('.ae-fav-cancel-add-btn').addEventListener('click', () => { listEl.innerHTML = buildCatList(); });
                     input.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); if (e.key === 'Escape') listEl.innerHTML = buildCatList(); });
                     listEl.scrollTop = listEl.scrollHeight;
                 });
@@ -1341,7 +1341,7 @@
                     listEl.appendChild(addRow); const input = addRow.querySelector('input'); input.focus();
                     const doAdd = () => { const name = input.value.trim(); if (name) addFavoriteCategory(name); listEl.innerHTML = buildList(); };
                     addRow.querySelector('.ae-fav-confirm-add-btn').addEventListener('click', doAdd);
-                    addRow.querySelector('.ae-fav-cancel-add-btn').addEventListener('click', () => listEl.innerHTML = buildList());
+                    addRow.querySelector('.ae-fav-cancel-add-btn').addEventListener('click', () => { listEl.innerHTML = buildList(); });
                     input.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); if (e.key === 'Escape') listEl.innerHTML = buildList(); });
                     listEl.scrollTop = listEl.scrollHeight;
                 });
@@ -1705,7 +1705,7 @@
 
         // Hide original article content but keep comments
         article.style.display = 'none';
-        document.querySelectorAll('#main > #ad-1, #main > #ad-2').forEach(el => el.style.display = 'none');
+        document.querySelectorAll('#main > #ad-1, #main > #ad-2').forEach(el => { el.style.display = 'none'; });
 
         // Full width layout
         const secondary = document.querySelector('#secondary');
@@ -2203,11 +2203,85 @@
         .ap-video-wrapper .video-js { display: block !important; width: 100% !important; height: 100% !important; max-width: none !important; }
         .ap-video-wrapper .video-js.vjs-fluid { padding-top: 0 !important; }
         .ap-video-wrapper .video-js:not(.vjs-fluid), .ap-video-wrapper .video-js .vjs-tech, .ap-video-wrapper .video-js video { width: 100% !important; height: 100% !important; }
-        .ap-video-wrapper .video-js .vjs-control-bar { z-index: 30 !important; }
-        .vjs-webfs-control { width: 3em !important; min-width: 3em !important; padding: 0 !important; }
+        .video-js .vjs-play-control,
+        .video-js .vjs-mute-control {
+            width: 32px !important;
+            min-width: 32px !important;
+            height: 32px !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            padding: 0 !important;
+            margin: 0 6px !important;
+            background: rgba(40, 40, 40, 0.6) !important;
+            border-radius: 50% !important;
+        }
+
+        /* Group-level icon alignments */
+        .video-js .vjs-control .vjs-icon-placeholder {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            height: 100% !important;
+            width: 100% !important;
+        }
+        .video-js .vjs-control .vjs-icon-placeholder::before {
+            position: static !important;
+            line-height: 1 !important;
+            height: auto !important;
+            margin: 0 !important;
+        }
+
+        /* Right Side: Functions Capsule (Speed, PIP, WebFS, Fullscreen) */
+        .video-js .vjs-playback-rate,
+        .video-js .vjs-picture-in-picture-control,
+        .vjs-webfs-control,
+        .video-js .vjs-fullscreen-control {
+            background: rgba(40, 40, 40, 0.6) !important;
+            height: 32px !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
+            width: 34px !important;
+            min-width: 34px !important;
+        }
+        .video-js .vjs-playback-rate {
+            margin-left: auto !important;
+            border-radius: 16px 0 0 16px !important;
+            width: 44px !important;
+            min-width: 44px !important;
+        }
+        .vjs-playback-rate .vjs-playback-rate-value,
+        .vjs-current-time,
+        .vjs-duration,
+        .vjs-time-divider {
+            font-size: 1.25em !important;
+            line-height: 32px !important;
+        }
+        .vjs-playback-rate .vjs-playback-rate-value {
+            background: none !important;
+        }
+        .vjs-playback-rate .vjs-menu-button {
+            background: none !important;
+        }
+        /* Restore popup menu style */
+        .video-js .vjs-menu .vjs-menu-content {
+            background-color: rgba(43, 51, 63, 0.9) !important;
+        }
+
+        .video-js .vjs-fullscreen-control {
+            border-radius: 0 16px 16px 0 !important;
+            margin-right: 10px !important;
+            width: 36px !important;
+            min-width: 36px !important;
+        }
+
         .vjs-webfs-control .vjs-control-text { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0,0,0,0) !important; white-space: nowrap !important; border: 0 !important; }
-        .vjs-webfs-control .ae-webfs-icon { width: 15px; height: 15px; display: block; margin: 0 auto; color: var(--ae-text-primary); pointer-events: none; transition: 0.2s ease; }
-        .vjs-webfs-control .ae-webfs-icon path { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+        .vjs-webfs-control .ae-webfs-icon { width: 16px; height: 16px; display: block; margin: 0; color: var(--ae-text-primary); pointer-events: none; transition: 0.2s ease; }
+        .vjs-webfs-control .ae-webfs-icon path { fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
         .vjs-webfs-control .ae-webfs-icon .ae-webfs-dot { fill: currentColor; opacity: 0.9; }
         .ae-webfs-btn.is-active .ae-webfs-icon { color: var(--ae-primary); }
 
@@ -2247,6 +2321,68 @@
             .ap-ep-grid { grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); }
             .ap-ep-btn { height: 36px; font-size: 13px; }
             .single-post .comments-area { padding: 0 8px; }
+        }
+
+        /* Player layout adjustments */
+        .vjs-seek-button.skip-10 { display: none !important; }
+
+        /* Progress Bar on top row */
+        .video-js .vjs-control-bar {
+            display: flex !important;
+            flex-wrap: wrap !important;
+            height: auto !important;
+            padding-top: 0 !important;
+        }
+        .video-js .vjs-progress-control {
+            width: 100% !important;
+            flex: none !important;
+            order: -1; /* Move to top of flex container */
+            height: 26px !important;
+            margin-bottom: 2px !important;
+        }
+        /* Ensure progress bar takes full width properly */
+        .video-js .vjs-progress-control .vjs-progress-holder {
+            margin: 0 12px !important;
+        }
+        .video-js .vjs-play-progress {
+            background-color: var(--ae-primary) !important;
+            background-image: var(--ae-primary-grad) !important;
+        }
+        .video-js .vjs-play-progress:before {
+            color: var(--ae-primary) !important;
+        }
+        .video-js .vjs-load-progress, .video-js .vjs-load-progress div {
+            background: rgba(255, 255, 255, 0.2) !important;
+        }
+
+        .ap-video-wrapper .video-js .vjs-control-bar { z-index: 30 !important; background: none !important; display: flex !important; flex-wrap: wrap !important; height: auto !important; padding-top: 4px !important; padding-bottom: 10px !important; }
+
+        /* Time display: Current Time / Duration */
+        .vjs-remaining-time { display: none !important; }
+        .vjs-current-time, .vjs-time-divider, .vjs-duration {
+            display: inline-flex !important;
+            align-items: center !important;
+            padding-left: 2px !important;
+            padding-right: 2px !important;
+            min-width: 0 !important;
+            width: auto !important;
+            background: rgba(40, 40, 40, 0.6) !important;
+            height: 32px !important;
+            margin: 0 !important;
+        }
+        .vjs-current-time {
+            border-radius: 16px 0 0 16px !important;
+            padding-left: 10px !important;
+            margin-left: 6px !important;
+        }
+        .vjs-duration {
+            border-radius: 0 16px 16px 0 !important;
+            padding-right: 10px !important;
+            margin-right: 6px !important;
+        }
+        .vjs-time-divider {
+            color: rgba(255,255,255,0.8);
+            margin: 0 !important;
         }
     `;
 
