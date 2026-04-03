@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.6.0
+// @version      3.6.1
 // @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
@@ -680,9 +680,7 @@
         .ae-toast {
             position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(20px);
             padding: 10px 24px; border-radius: 999px; font-size: 14px; font-weight: 600;
-            background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(12px);
-            border: 1px solid rgba(var(--ae-primary-rgb), 0.45); color: #fff;
-            box-shadow: 0 15px 45px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.1);
+            background: rgba(40, 40, 40, 0.5); backdrop-filter: blur(8px);
             z-index: 2147483647; pointer-events: none; opacity: 0;
             transition: all 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
             display: flex; align-items: center; gap: 10px;
@@ -2213,7 +2211,7 @@
             justify-content: center !important;
             padding: 0 !important;
             margin: 0 6px !important;
-            background: rgba(40, 40, 40, 0.6) !important;
+            background: rgba(40, 40, 40, 0.5) !important; backdrop-filter: blur(8px);
             border-radius: 50% !important;
         }
 
@@ -2237,7 +2235,7 @@
         .video-js .vjs-picture-in-picture-control,
         .vjs-webfs-control,
         .video-js .vjs-fullscreen-control {
-            background: rgba(40, 40, 40, 0.6) !important;
+            background: rgba(40, 40, 40, 0.5) !important; 
             height: 32px !important;
             display: inline-flex !important;
             align-items: center !important;
@@ -2366,7 +2364,7 @@
             padding-right: 2px !important;
             min-width: 0 !important;
             width: auto !important;
-            background: rgba(40, 40, 40, 0.6) !important;
+            background: rgba(40, 40, 40, 0.5) !important; backdrop-filter: blur(8px);
             height: 32px !important;
             margin: 0 !important;
         }
