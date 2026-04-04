@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.6.1
+// @version      3.7.0
 // @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
@@ -844,11 +844,11 @@
                     </div>
                     <div style="flex:1"></div>
                     <div class="ae-filter-group">
-                        <span class="ae-filter-label">状态：</span>
+                        <span class="ae-filter-label">狀態：</span>
                         <select id="ae-status-select" class="ae-select ae-filter-select">
-                            <option value="all">全部状态</option>
-                            <option value="airing">🔴 連載中</option>
-                            <option value="completed">✅ 已完結</option>
+                            <option value="all">全部狀態</option>
+                            <option value="airing">🟢 連載中</option>
+                            <option value="completed">🌚 已完結</option>
                         </select>
                     </div>
                     <div class="ae-filter-group">
@@ -1709,9 +1709,9 @@
         const secondary = document.querySelector('#secondary');
         if (secondary) secondary.style.display = 'none';
         const primaryDiv = document.getElementById('primary');
-        if (primaryDiv) primaryDiv.style.cssText = 'width:100%!important;max-width:1100px!important;margin:0 auto!important;float:none!important;';
+        if (primaryDiv) primaryDiv.style.cssText = 'width:100%!important;margin:0 auto!important;float:none!important;';
         const siteContent = document.querySelector('.site-content');
-        if (siteContent) siteContent.style.cssText = 'max-width:1200px!important;margin:0 auto!important;padding:0!important;';
+        if (siteContent) siteContent.style.cssText = 'margin:0 auto!important;padding:0!important;';
 
         // Move play title/info into site header
         const headerHost = document.querySelector('#masthead .header-content') || document.querySelector('#masthead');
@@ -2060,17 +2060,6 @@
             if (document.visibilityState === 'hidden') persistPlaybackProgress(true);
         });
 
-        // Scroll player into view
-        requestAnimationFrame(() => {
-            setTimeout(() => {
-                const w = document.getElementById('ap-video-wrapper');
-                if (!w) return;
-                const rect = w.getBoundingClientRect();
-                const targetY = window.scrollY + rect.top - Math.max(0, (window.innerHeight - rect.height) / 2);
-                window.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
-            }, 60);
-        });
-
         // Make comments section visible and styled
         const commentsSection = document.getElementById('comments') || document.querySelector('.comments-area');
         if (commentsSection) {
@@ -2127,13 +2116,6 @@
                     epGrid.appendChild(btn);
                 });
 
-                // Scroll active button into view
-                const activeBtn = epGrid.querySelector('.ap-ep-btn.active');
-                if (activeBtn) {
-                    requestAnimationFrame(() => {
-                        activeBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-                    });
-                }
             });
         }
     }
@@ -2145,7 +2127,20 @@
             box-shadow: 0 4px 30px rgba(0,0,0,0.3) !important;
             border-bottom: 1px solid var(--ae-border-primary) !important;
         }
-        #masthead .header-content { padding: 8px 14px !important; min-height: 56px !important; }
+        #masthead .header-content {
+            padding: 8px 14px !important;
+            min-height: 56px !important;
+            margin: 0 auto !important;
+            max-width: 1200px !important;
+        }
+
+        @media (min-height: 920px) {
+            #masthead .header-content { max-width: 1600px !important; }
+        }
+
+        @media (min-height: 1200px) {
+            #masthead .header-content { max-width: 2200px !important; }
+        }
 
         /* Web Fullscreen */
         html.ae-web-fullscreen, body.ae-web-fullscreen { overflow: hidden !important; }
@@ -2162,6 +2157,18 @@
         /* Play Page Layout Resets */
         body.archive.category, body.archive.category #page, body.archive.category #content, body.archive.category .site-content, body.archive.category #primary, body.archive.category #main, body.archive.category #colophon { background: var(--ae-bg-base) !important; }
         body.archive.category #colophon .scroll-top { display: none !important; }
+        /* Dynamic Max-Width based on viewport height to balance vertical visibility */
+        #primary { max-width: 1100px !important; }
+        .site-content { max-width: 1200px !important; }
+        @media (min-height: 920px) {
+            #primary { max-width: 1500px !important; }
+            .site-content { max-width: 1600px !important; }
+        }
+        @media (min-height: 1200px) {
+            #primary { max-width: 2100px !important; }
+            .site-content { max-width: 2200px !important; }
+        }
+
         .ap-player-section { margin: 0 auto; max-width: 100%; display: block !important; clear: both !important; position: relative !important; z-index: 1 !important; }
         .ap-main-layout { display: block; }
         body.archive.category #masthead .site-title, body.archive.category #masthead #site-branding { display: none !important; }
