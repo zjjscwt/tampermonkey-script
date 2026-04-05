@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.7.0
+// @version      3.8.0
 // @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
@@ -2097,10 +2097,13 @@
                 epGrid.innerHTML = '';
                 if (epCount) epCount.textContent = `共 ${episodes.length} 集`;
 
-                episodes.forEach((ep) => {
+                let currentIdx = -1;
+                episodes.forEach((ep, idx) => {
                     const isCurrent = ep.postUrl === currentPostUrl ||
                         (ep.postId && ep.postId === currentPostId) ||
                         (Number.isFinite(ep.epNum) && ep.epNum === currentEpNum);
+
+                    if (isCurrent) currentIdx = idx;
 
                     const btn = document.createElement('button');
                     btn.className = 'ap-ep-btn' + (isCurrent ? ' active' : '');
@@ -2115,6 +2118,32 @@
                     });
                     epGrid.appendChild(btn);
                 });
+
+                // Add "Next Episode" button if not the last one
+                if (currentIdx >= 0 && currentIdx < episodes.length - 1) {
+                    const nextEp = episodes[currentIdx + 1];
+                    const controlBar = vjsContainer?.querySelector('.vjs-control-bar');
+                    const playBtn = controlBar?.querySelector('.vjs-play-control');
+                    if (controlBar && playBtn && !controlBar.querySelector('.vjs-next-control')) {
+                        const nextBtn = document.createElement('button');
+                        nextBtn.type = 'button';
+                        nextBtn.className = 'vjs-next-control vjs-control vjs-button';
+                        nextBtn.title = `下一集：${nextEp.title}`;
+                        nextBtn.innerHTML = `
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" fill="currentColor"></path>
+                            </svg>
+                            <span class="vjs-control-text">下一集</span>
+                        `;
+                        nextBtn.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            persistPlaybackProgress(true);
+                            location.href = nextEp.postUrl;
+                        });
+                        // Insert after play button
+                        playBtn.after(nextBtn);
+                    }
+                }
 
             });
         }
@@ -2209,7 +2238,8 @@
         .ap-video-wrapper .video-js.vjs-fluid { padding-top: 0 !important; }
         .ap-video-wrapper .video-js:not(.vjs-fluid), .ap-video-wrapper .video-js .vjs-tech, .ap-video-wrapper .video-js video { width: 100% !important; height: 100% !important; }
         .video-js .vjs-play-control,
-        .video-js .vjs-mute-control {
+        .video-js .vjs-mute-control,
+        .video-js .vjs-next-control {
             width: 32px !important;
             min-width: 32px !important;
             height: 32px !important;
@@ -2220,7 +2250,19 @@
             margin: 0 6px !important;
             background: rgba(40, 40, 40, 0.5) !important; backdrop-filter: blur(8px);
             border-radius: 50% !important;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
         }
+        .video-js .vjs-next-control:hover {
+            background: rgba(60, 60, 60, 0.72) !important;
+            transform: scale(1.1);
+        }
+        .video-js .vjs-next-control svg {
+            width: 16px;
+            height: 16px;
+            color: #fff;
+        }
+        .vjs-next-control .vjs-control-text { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0,0,0,0) !important; white-space: nowrap !important; border: 0 !important; }
 
         /* Group-level icon alignments */
         .video-js .vjs-control .vjs-icon-placeholder {
