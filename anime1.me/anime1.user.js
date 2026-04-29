@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.8.0
+// @version      3.9.0
 // @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
@@ -11,6 +11,8 @@
 // @grant        GM_listValues
 // @connect      *.bgm.tv
 // @connect      api.bgm.tv
+// @connect      api.themoviedb.org
+// @connect      image.tmdb.org
 // @connect      anime1.me
 // @run-at       document-start
 // @icon         https://anime1.me/favicon-32x32.png
@@ -34,6 +36,10 @@
     // ===================== CONFIG =====================
     const CACHE_EXPIRY = 7 * 24 * 60 * 60 * 1000; // 7 days
     const BGM_API_URL = 'https://api.bgm.tv/v0';
+    const TMDB_API_URL = 'https://api.themoviedb.org/3';
+    const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
+    const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
+    const TMDB_API_KEY = '8baba8ab6b8bbe247645bcae7df63d0d';
     const BGM_CACHE_PREFIX = 'bgm_v1_';
     const BGM_USER_AGENT = 'Anime1Enhancer/3.0.1 (https://anime1.me/)';
     const API_RATE_INTERVAL = 300; // ms between requests
@@ -92,7 +98,7 @@
                 <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
                 <h2 class="ae-modal-title" id="ae-modal-title">Anime1 增強設定</h2>
                 <div class="ae-modal-field">
-                    <p style="font-size:13px; color:var(--ae-text-secondary); line-height:1.6; margin-bottom:12px;">已成功切換至 Bangumi (BGM.tv) 封面源，無需手動設定 API Key。</p>
+                    <p style="font-size:13px; color:var(--ae-text-secondary); line-height:1.6; margin-bottom:12px;">封面來源：TMDB（內建 API Key）；評分來源：Bangumi (BGM.tv)。</p>
                     <div class="ae-modal-shortcuts">
                         <h3>播放器快捷鍵說明：</h3>
                         <ul>
@@ -130,7 +136,7 @@
         overlay.querySelector('#ae-close-settings').addEventListener('click', close);
 
         overlay.querySelector('#ae-clear-bgm-cache').addEventListener('click', () => {
-            if (confirm('確定要清除所有已緩存的 Bangumi 封面數據嗎？')) {
+            if (confirm('確定要清除所有已緩存的封面與評分數據嗎？')) {
                 try {
                     const keys = GM_listValues();
                     let count = 0;
@@ -468,11 +474,15 @@
     // Bangumi request queue
     let apiQueue = [];
     let apiProcessing = false;
+    let tmdbQueue = [];
+    let tmdbProcessing = false;
 
     function clearApiQueue() {
         // Resolve all pending tasks with null to avoid hanging promises
         apiQueue.forEach(item => item.resolve(null));
         apiQueue = [];
+        tmdbQueue.forEach(item => item.resolve(null));
+        tmdbQueue = [];
     }
 
     function processApiQueue() {
@@ -513,11 +523,314 @@
         });
     }
 
-    async function searchBangumi(animeName, year) {
-        const cached = getCachedData(animeName);
-        if (cached !== null) return cached;
+    function processTmdbQueue() {
+        if (tmdbProcessing || tmdbQueue.length === 0) return;
+        tmdbProcessing = true;
+        const item = tmdbQueue.shift();
+        if (!item) { tmdbProcessing = false; return; }
+        const { url, resolve } = item;
 
-        const yearNum = parseInt(String(year || '').match(/\d+/)?.[0]);
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url,
+            headers: {
+                'Accept': 'application/json',
+                'User-Agent': BGM_USER_AGENT
+            },
+            onload(res) {
+                if (res.status >= 200 && res.status < 300) {
+                    try { resolve(JSON.parse(res.responseText)); } catch { resolve(null); }
+                } else {
+                    resolve(null);
+                }
+                setTimeout(() => { tmdbProcessing = false; processTmdbQueue(); }, API_RATE_INTERVAL);
+            },
+            onerror() {
+                resolve(null);
+                setTimeout(() => { tmdbProcessing = false; processTmdbQueue(); }, API_RATE_INTERVAL);
+            }
+        });
+    }
+
+    function tmdbGet(url, options = {}) {
+        const priority = !!options.priority;
+        return new Promise(resolve => {
+            if (priority) tmdbQueue.unshift({ url, resolve });
+            else tmdbQueue.push({ url, resolve });
+            processTmdbQueue();
+        });
+    }
+
+    function extractYearNumber(year) {
+        const yearNum = parseInt(String(year || '').match(/\d{4}/)?.[0], 10);
+        return Number.isFinite(yearNum) ? yearNum : null;
+    }
+
+    function getYearFromDate(dateText) {
+        if (!dateText || typeof dateText !== 'string') return null;
+        const match = dateText.match(/^(\d{4})/);
+        if (!match) return null;
+        const year = Number(match[1]);
+        return Number.isFinite(year) ? year : null;
+    }
+
+    function normalizeAnimeNameForQuery(name) {
+        let cleaned = String(name || '').trim();
+        if (!cleaned) return '';
+
+        const seasonInBracketsPattern = /[（(][^（）()]{0,24}(?:第\s*[0-9０-９一二三四五六七八九十百千兩两〇零]+\s*[季期篇部]|season\s*\d+|s\d+)[^（）()]{0,24}[)）]/gi;
+        cleaned = cleaned.replace(seasonInBracketsPattern, ' ');
+
+        const seasonPatterns = [
+            /第\s*[0-9０-９一二三四五六七八九十百千兩两〇零]+\s*[季期篇部](?:\s*(?:完結篇|完结篇|完結|完结|最終章|最终章))?/gi,
+            /\bseason\s*[0-9]+\b/gi,
+            /\bs(?:eason)?\s*[0-9]+\b/gi,
+            /\bpart\s*[0-9]+\b/gi,
+            /\bpt\.?\s*[0-9]+\b/gi
+        ];
+        for (const pattern of seasonPatterns) {
+            cleaned = cleaned.replace(pattern, ' ');
+        }
+
+        cleaned = cleaned
+            .replace(/[-－–—_]+/g, ' ')
+            .replace(/[：:|/\\-]\s*$/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        return cleaned;
+    }
+
+    function normalizeAsciiDigits(text) {
+        return String(text || '').replace(/[０-９]/g, (ch) => String(ch.charCodeAt(0) - 0xFEE0));
+    }
+
+    function parseEnglishOrdinal(raw) {
+        const text = String(raw || '').toLowerCase().replace(/[\s_-]+/g, '');
+        const map = {
+            first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6,
+            seventh: 7, eighth: 8, ninth: 9, tenth: 10, eleventh: 11, twelfth: 12
+        };
+        if (map[text]) return map[text];
+        const ordinalMatch = text.match(/^(\d+)(?:st|nd|rd|th)$/);
+        if (ordinalMatch) {
+            const value = Number(ordinalMatch[1]);
+            return Number.isFinite(value) && value > 0 ? value : null;
+        }
+        return null;
+    }
+
+    function parseSeasonNumber(raw) {
+        const text = normalizeAsciiDigits(raw).trim();
+        if (!text) return null;
+        const englishOrdinal = parseEnglishOrdinal(text);
+        if (Number.isFinite(englishOrdinal)) return englishOrdinal;
+        if (/^\d+$/.test(text)) {
+            const value = Number(text);
+            return Number.isFinite(value) && value > 0 ? value : null;
+        }
+
+        const digitMap = {
+            '零': 0, '〇': 0,
+            '一': 1, '二': 2, '兩': 2, '两': 2, '三': 3, '四': 4, '五': 5,
+            '六': 6, '七': 7, '八': 8, '九': 9
+        };
+        const unitMap = { '十': 10, '百': 100, '千': 1000 };
+
+        let section = 0;
+        let number = 0;
+        let seen = false;
+
+        for (const ch of text) {
+            if (Object.prototype.hasOwnProperty.call(digitMap, ch)) {
+                number = digitMap[ch];
+                seen = true;
+                continue;
+            }
+            if (Object.prototype.hasOwnProperty.call(unitMap, ch)) {
+                seen = true;
+                const unit = unitMap[ch];
+                if (number === 0) number = 1;
+                section += number * unit;
+                number = 0;
+                continue;
+            }
+            return null;
+        }
+
+        if (!seen) return null;
+        const value = section + number;
+        return Number.isFinite(value) && value > 0 ? value : null;
+    }
+
+    function extractTitleAndSeason(rawName) {
+        const original = String(rawName || '').trim();
+        let working = original;
+        let seasonNumber = null;
+
+        const trySetSeason = (rawSeason) => {
+            if (Number.isFinite(seasonNumber)) return;
+            const parsed = parseSeasonNumber(rawSeason);
+            if (Number.isFinite(parsed) && parsed > 0) seasonNumber = parsed;
+        };
+
+        const trailingSeasonInBrackets = /(?:\s*[-_ ]*)[（(]\s*(?:(?:第\s*([0-9０-９一二三四五六七八九十百千兩两〇零]+)\s*(?:季|期|部|篇))|(?:(?:season|s|part|pt\.?)\s*([0-9０-９]+))|((?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth))\s+season)\s*[)）]\s*$/i;
+        const trailingSeasonText = /(?:\s*[-_ ]*)?(?:第\s*([0-9０-９一二三四五六七八九十百千兩两〇零]+)\s*(?:季|期|部|篇)|(?:season|s|part|pt\.?)\s*([0-9０-９]+)|((?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth))\s+season)\s*(?:[-_ ]*)$/i;
+
+        let changed = true;
+        while (changed) {
+            changed = false;
+            const bracketMatch = working.match(trailingSeasonInBrackets);
+            if (bracketMatch && typeof bracketMatch.index === 'number') {
+                trySetSeason(bracketMatch[1] || bracketMatch[2] || bracketMatch[3]);
+                working = working.slice(0, bracketMatch.index).trim();
+                changed = true;
+                continue;
+            }
+            const textMatch = working.match(trailingSeasonText);
+            if (textMatch && typeof textMatch.index === 'number') {
+                trySetSeason(textMatch[1] || textMatch[2] || textMatch[3]);
+                working = working.slice(0, textMatch.index).trim();
+                changed = true;
+            }
+        }
+
+        if (Number.isFinite(seasonNumber)) {
+            const trailingDigit = working.match(/(?:[\s\-_:：])([0-9０-９]+)\s*$/);
+            if (trailingDigit && typeof trailingDigit.index === 'number') {
+                const tailNum = parseSeasonNumber(trailingDigit[1]);
+                if (tailNum === seasonNumber) {
+                    working = working.slice(0, trailingDigit.index).trim();
+                }
+            }
+        }
+
+        working = working
+            .replace(/[：:|/\\-]+\s*$/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        const baseName = normalizeAnimeNameForQuery(working) || normalizeAnimeNameForQuery(original) || original;
+        return { baseName, seasonNumber };
+    }
+
+    function buildQueryCandidates(name) {
+        const candidates = [];
+        const seen = new Set();
+        const add = (value) => {
+            const query = String(value || '')
+                .replace(/[-－–—_]+/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            if (!query || seen.has(query)) return;
+            seen.add(query);
+            candidates.push(query);
+        };
+        const firstNChars = (text, n) => Array.from(String(text || '')).slice(0, n).join('');
+
+        const normalized = normalizeAnimeNameForQuery(name);
+        if (!normalized) return candidates;
+
+        const isContinuousName = !/\s/.test(normalized);
+        const longNameShort = (isContinuousName && Array.from(normalized).length > 10) ? firstNChars(normalized, 10) : '';
+        if (longNameShort) add(longNameShort);
+        add(normalized);
+
+        const parts = normalized.split(/\s+/).filter(Boolean);
+        if (parts.length <= 1) return candidates;
+
+        for (let count = parts.length - 1; count >= 1; count -= 1) {
+            add(parts.slice(0, count).join(' '));
+        }
+        return candidates;
+    }
+
+    async function tmdbSearchTv(query, yearRef = null) {
+        const params = new URLSearchParams({
+            api_key: TMDB_API_KEY,
+            query,
+            language: 'zh-TW',
+            include_adult: 'true'
+        });
+        if (Number.isFinite(yearRef)) {
+            params.set('year', String(yearRef));
+        }
+        const data = await tmdbGet(`${TMDB_API_URL}/search/tv?${params.toString()}`);
+        if (!data || !Array.isArray(data.results)) return [];
+        return data.results;
+    }
+
+    async function tmdbFetchSeason(tvId, seasonNumber) {
+        const params = new URLSearchParams({
+            api_key: TMDB_API_KEY,
+            language: 'zh-TW'
+        });
+        return await tmdbGet(`${TMDB_API_URL}/tv/${tvId}/season/${seasonNumber}?${params.toString()}`, { priority: true });
+    }
+
+    function buildTmdbPosterUrl(posterPath) {
+        if (!posterPath || typeof posterPath !== 'string') return null;
+        return `${TMDB_IMAGE_BASE}${posterPath}`;
+    }
+
+    function buildTmdbBackdropUrl(backdropPath) {
+        if (!backdropPath || typeof backdropPath !== 'string') return null;
+        return `${TMDB_BACKDROP_BASE}${backdropPath}`;
+    }
+
+    function filterAnimeTvResults(results) {
+        if (!Array.isArray(results) || results.length === 0) return [];
+        return results.filter(item => Array.isArray(item?.genre_ids) && item.genre_ids.includes(16));
+    }
+
+    async function searchTmdbPoster(animeName, year) {
+        const parsed = extractTitleAndSeason(animeName);
+        const candidates = buildQueryCandidates(parsed.baseName);
+        const inputYear = extractYearNumber(year);
+
+        for (const query of candidates) {
+            const results = await tmdbSearchTv(query, inputYear);
+            if (!results.length) continue;
+            const animeResults = filterAnimeTvResults(results);
+            if (!animeResults.length) continue;
+
+            const best = animeResults[0];
+            if (!best) continue;
+
+            let posterPath = best.poster_path || null;
+            if (Number.isFinite(parsed.seasonNumber) && parsed.seasonNumber > 0 && Number.isFinite(best.id)) {
+                const seasonData = await tmdbFetchSeason(best.id, parsed.seasonNumber);
+                if (seasonData?.poster_path) posterPath = seasonData.poster_path;
+            }
+
+            return {
+                poster: buildTmdbPosterUrl(posterPath),
+                title: best.name || best.original_name || parsed.baseName || animeName
+            };
+        }
+
+        return { poster: null, title: parsed.baseName || animeName };
+    }
+
+    async function searchTmdbBackdropForPlayer(animeName, year = null) {
+        const parsed = extractTitleAndSeason(animeName);
+        const candidates = buildQueryCandidates(parsed.baseName);
+        const inputYear = extractYearNumber(year);
+
+        for (const query of candidates) {
+            const results = await tmdbSearchTv(query, inputYear);
+            if (!results.length) continue;
+            const animeResults = filterAnimeTvResults(results);
+            if (!animeResults.length) continue;
+            const first = animeResults[0];
+            const backdrop = buildTmdbBackdropUrl(first?.backdrop_path);
+            if (backdrop) return backdrop;
+        }
+        return null;
+    }
+
+    async function searchBangumiScore(animeName, year) {
+        const yearNum = extractYearNumber(year);
         const body = {
             keyword: animeName,
             filter: {
@@ -535,27 +848,38 @@
         }
 
         const data = await bgmRequest('/search/subjects', body);
-
-        // If data is null (cancelled/error), just exit without caching failure
         if (!data) return null;
-
         if (data.data && data.data.length > 0) {
             const media = data.data[0];
-            const result = {
-                poster: media.images?.large || media.images?.common || null,
+            return {
                 score: media.rating?.score || null,
                 title: media.name_cn || media.name || animeName
             };
-
-            // Only cache if we actually found a poster URL
-            if (result.poster) {
-                setCachedData(animeName, result);
-            }
-            return result;
-        } else {
-            // Found nothing on Bangumi: don't cache to allow future retries
-            return { poster: null, score: null, title: animeName };
         }
+        return { score: null, title: animeName };
+    }
+
+    async function searchBangumi(animeName, year) {
+        const cached = getCachedData(animeName);
+        if (cached !== null) return cached;
+
+        const [tmdbData, bgmData] = await Promise.all([
+            searchTmdbPoster(animeName, year),
+            searchBangumiScore(animeName, year)
+        ]);
+
+        if (!tmdbData && !bgmData) return null;
+
+        const result = {
+            poster: tmdbData?.poster || null,
+            score: bgmData?.score || null,
+            title: tmdbData?.title || bgmData?.title || animeName
+        };
+
+        if (result.poster) {
+            setCachedData(animeName, result);
+        }
+        return result;
     }
 
     // ===================== GLOBAL STYLES =====================
@@ -2072,10 +2396,9 @@
             }
         }
 
-        // Fetch Bangumi banner/poster
+        // Fetch TMDB backdrop for player hero (non-season, w1280)
         if (animeName) {
-            searchBangumi(animeName).then(data => {
-                const heroImage = data?.poster || null;
+            searchTmdbBackdropForPlayer(animeName).then(heroImage => {
                 if (heroImage && vjsContainer) {
                     const videoJsRoot = vjsContainer.querySelector('.video-js');
                     const vid = vjsContainer.querySelector('video');
