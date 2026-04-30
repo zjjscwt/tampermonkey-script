@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.9.0
+// @version      3.10.0
 // @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
 // @author       Ryan
 // @match        https://anime1.me/*
@@ -760,6 +760,18 @@
         return data.results;
     }
 
+    async function tmdbSearchMovie(query) {
+        const params = new URLSearchParams({
+            api_key: TMDB_API_KEY,
+            query,
+            language: 'zh-TW',
+            include_adult: 'true'
+        });
+        const data = await tmdbGet(`${TMDB_API_URL}/search/movie?${params.toString()}`);
+        if (!data || !Array.isArray(data.results)) return [];
+        return data.results;
+    }
+
     async function tmdbFetchSeason(tvId, seasonNumber) {
         const params = new URLSearchParams({
             api_key: TMDB_API_KEY,
@@ -783,10 +795,16 @@
         return results.filter(item => Array.isArray(item?.genre_ids) && item.genre_ids.includes(16));
     }
 
+    function filterAnimeMovieResults(results) {
+        if (!Array.isArray(results) || results.length === 0) return [];
+        return results.filter(item => Array.isArray(item?.genre_ids) && item.genre_ids.includes(16));
+    }
+
     async function searchTmdbPoster(animeName, year) {
         const parsed = extractTitleAndSeason(animeName);
         const candidates = buildQueryCandidates(parsed.baseName);
         const inputYear = extractYearNumber(year);
+        let fallbackTitle = parsed.baseName || animeName;
 
         for (const query of candidates) {
             const results = await tmdbSearchTv(query, inputYear);
@@ -797,19 +815,36 @@
             const best = animeResults[0];
             if (!best) continue;
 
+            fallbackTitle = best.name || best.original_name || fallbackTitle;
             let posterPath = best.poster_path || null;
             if (Number.isFinite(parsed.seasonNumber) && parsed.seasonNumber > 0 && Number.isFinite(best.id)) {
                 const seasonData = await tmdbFetchSeason(best.id, parsed.seasonNumber);
                 if (seasonData?.poster_path) posterPath = seasonData.poster_path;
             }
 
-            return {
-                poster: buildTmdbPosterUrl(posterPath),
-                title: best.name || best.original_name || parsed.baseName || animeName
-            };
+            const poster = buildTmdbPosterUrl(posterPath);
+            if (poster) {
+                return { poster, title: fallbackTitle };
+            }
         }
 
-        return { poster: null, title: parsed.baseName || animeName };
+        for (const query of candidates) {
+            const results = await tmdbSearchMovie(query);
+            if (!results.length) continue;
+            const animeResults = filterAnimeMovieResults(results);
+            if (!animeResults.length) continue;
+
+            const best = animeResults[0];
+            if (!best) continue;
+
+            fallbackTitle = best.title || best.original_title || fallbackTitle;
+            const poster = buildTmdbPosterUrl(best.poster_path || null);
+            if (poster) {
+                return { poster, title: fallbackTitle };
+            }
+        }
+
+        return { poster: null, title: fallbackTitle };
     }
 
     async function searchTmdbBackdropForPlayer(animeName, year = null) {
@@ -970,7 +1005,6 @@
         .ae-modal-title { margin: 0 0 8px !important; font-size: 22px !important; font-weight: 700 !important; color: #ddd6fe !important; }
         .ae-modal-tip, .ae-modal-status, .ae-modal-steps { color: var(--ae-text-secondary); font-size: 13px; margin: 0 0 10px; line-height:1.6; }
         .ae-modal-steps a { color: var(--ae-primary); text-decoration: underline; }
-        .ae-meta-sub { font-size: 11px; color: rgba(255,255,255,0.35); }
 
         /* Form Controls */
         .ae-modal-field input, .ae-fav-rename-input {
@@ -1373,7 +1407,13 @@
 
             const isAiring = anime.episodes.includes('連載中');
             const epMatch = anime.episodes.match(/\((\d+)\)/) || anime.episodes.match(/^(\d[\d-]*)$/);
-            const epText = epMatch ? epMatch[1] : anime.episodes;
+            const epText = epMatch ? epMatch[1] : '';
+            const epFallback = String(anime.episodes || '').replace(/連載中|已完結|完結|\(|\)/g, '').trim();
+            const yearText = anime.year || '未知年份';
+            const episodeMetaText = epText
+                ? (isAiring ? `EP ${epText}` : epText)
+                : (epFallback ? (isAiring ? `EP ${epFallback}` : epFallback) : (isAiring ? 'EP ?' : '?'));
+            const episodeMetaClass = isAiring ? 'is-airing' : 'is-complete';
             const progress = continueMetaByCat.get(anime.catId);
             const progressText = progress?.lastEpisode
                 ? `上次觀看到 EP ${String(progress.lastEpisode).padStart(2, '0')}`
@@ -1384,9 +1424,6 @@
                     <div class="ae-card-poster-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg></div>
                     <img class="ae-card-img" data-name="${anime.name}" alt="${anime.name}" loading="lazy">
                     <div class="ae-card-overlay"></div>
-                    ${isAiring ? '<span class="ae-badge ae-badge-airing">● 連載中</span>' : '<span class="ae-badge ae-badge-done">已完結</span>'}
-                    ${epText ? `<span class="ae-badge ae-badge-ep">${isAiring ? 'EP ' : ''}${epText}</span>` : ''}
-                    <span class="ae-badge ae-badge-score" style="display:none;"></span>
                     ${progressText ? `<span class="ae-badge ae-badge-progress">${progressText}</span>` : ''}
                     ${(progressText && currentFilter === 'continue') ? '<button type="button" class="ae-progress-delete" title="刪除觀看記錄" aria-label="刪除觀看記錄">×</button>' : ''}
                     ${currentFilter === 'favorites' ? `<button type="button" class="ae-progress-delete ae-fav-delete" title="取消收藏" aria-label="取消收藏" data-cat-id="${anime.catId}">×</button>` : ''}
@@ -1394,8 +1431,9 @@
                 <div class="ae-card-info">
                     <h3 class="ae-card-title">${anime.isR18 ? '🔞 ' : ''}${anime.name}</h3>
                     <div class="ae-card-meta">
-                        <span class="ae-meta-tag">${anime.year}${anime.season ? '·' + anime.season : ''}</span>
-                        ${anime.sub ? `<span class="ae-meta-sub">${anime.sub}</span>` : ''}
+                        <span class="ae-meta-tag">${yearText}</span>
+                        <span class="ae-meta-episode ${episodeMetaClass}">${episodeMetaText}</span>
+                        <span class="ae-meta-score" style="display:none;"></span>
                     </div>
                 </div>
             `;
@@ -1405,13 +1443,13 @@
         async function loadCover(anime, cardKey) {
             const card = grid.querySelector(`.ae-card[data-card-key="${cardKey}"]`);
             if (!card) return;
-            const img = card.querySelector('.ae-card-img'), placeholder = card.querySelector('.ae-card-poster-placeholder'), scoreBadge = card.querySelector('.ae-badge-score');
+            const img = card.querySelector('.ae-card-img'), placeholder = card.querySelector('.ae-card-poster-placeholder'), scoreMeta = card.querySelector('.ae-meta-score');
             const data = await searchBangumi(anime.name, anime.year);
             if (data) {
-                if (data.score && scoreBadge) {
+                if (data.score && scoreMeta) {
                     const scoreValue = typeof data.score === 'number' ? data.score.toFixed(1) : data.score;
-                    scoreBadge.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>${scoreValue}`;
-                    scoreBadge.style.display = 'flex';
+                    scoreMeta.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>${scoreValue}`;
+                    scoreMeta.style.display = 'inline-flex';
                 }
                 if (data.poster) {
                     const showImage = (src) => {
@@ -1780,16 +1818,6 @@
             backdrop-filter: blur(14px) saturate(1.2); border: 1px solid rgba(255,255,255,0.18); 
             box-shadow: 0 4px 15px rgba(0,0,0,0.35);
         }
-        .ae-badge-airing { top: 8px; left: 8px; background: rgba(var(--ae-success-rgb),0.72); color: #fff; }
-        .ae-badge-done { top: 8px; left: 8px; background: rgba(107,114,128,0.68); color: #e5e7eb; }
-        .ae-badge-ep { bottom: 8px; left: 8px; background: rgba(var(--ae-primary-rgb),0.72); color: #fff; }
-        .ae-badge-score { 
-            bottom: 8px; right: 8px; 
-            background: linear-gradient(135deg, rgba(245, 158, 11, 0.82), rgba(217, 119, 6, 0.85)); 
-            color: #fff; display: flex; align-items: center; gap: 4px; 
-            box-shadow: 0 4px 18px rgba(217, 119, 6, 0.35); 
-        }
-        .ae-badge-score svg { width: 11px; height: 11px; fill: currentColor; margin-bottom: 1px; }
         .ae-badge-progress { bottom: 34px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 16px); background: rgba(15,23,42,0.75); border: 1px solid rgba(148,163,184,0.3); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e8f0; }
 
         /* Deletions */
@@ -1798,8 +1826,19 @@
 
         .ae-card-info { padding: 12px; }
         .ae-card-title { font-size: 13.5px!important; font-weight: 600!important; margin: 0 0 6px!important; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--ae-text-primary)!important; }
-        .ae-card-meta { display: flex; gap: 6px; flex-wrap: wrap; }
-        .ae-meta-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: rgba(var(--ae-primary-rgb),0.1); color: rgba(var(--ae-primary-rgb),0.8); }
+        .ae-card-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+        .ae-meta-tag, .ae-meta-episode, .ae-meta-score {
+            font-size: 11px; padding: 2px 8px; border-radius: 999px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid transparent;
+        }
+        .ae-meta-tag { background: rgba(var(--ae-primary-rgb),0.1); color: rgba(var(--ae-primary-rgb),0.86); border-color: rgba(var(--ae-primary-rgb),0.36); }
+        .ae-meta-episode.is-airing { background: rgba(var(--ae-success-rgb),0.18); color: #4ade80; border: 1px solid rgba(var(--ae-success-rgb),0.42); }
+        .ae-meta-episode.is-complete { background: rgba(59,130,246,0.16); color: #93c5fd; border: 1px solid rgba(59,130,246,0.36); }
+        .ae-meta-score {
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.26));
+            color: #fcd34d;
+            border: 1px solid rgba(245, 158, 11, 0.4);
+        }
+        .ae-meta-score svg { width: 11px; height: 11px; fill: currentColor; margin-bottom: 1px; }
 
         /* Dark mode generic overrides */
         :root.ae-dark #ae-search-input { color: var(--ae-text-primary)!important; }
