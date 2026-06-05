@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.10.0
-// @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
+// @version      3.11.7
+// @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵+評分篩選+排除列表+數據導出導入+列表收藏
 // @author       Ryan
 // @match        https://anime1.me/*
 // @grant        GM_xmlhttpRequest
@@ -17,10 +17,20 @@
 // @run-at       document-start
 // @icon         https://anime1.me/favicon-32x32.png
 // @license      MIT
+// @namespace https://github.com/zjjscwt/tampermonkey-script
+// @downloadURL https://update.greasyfork.org/scripts/566130/Anime1me%20%E5%A2%9E%E5%BC%B72026.user.js
+// @updateURL https://update.greasyfork.org/scripts/566130/Anime1me%20%E5%A2%9E%E5%BC%B72026.meta.js
 // ==/UserScript==
 
 (function () {
     'use strict';
+
+    // 0. Force dark color-scheme at earliest point (before DOM builds)
+    document.documentElement.style.colorScheme = 'dark';
+    const csMeta = document.createElement('meta');
+    csMeta.name = 'color-scheme';
+    csMeta.content = 'dark';
+    document.documentElement.appendChild(csMeta);
 
     // 1. Immediate hide to prevent flashing original content
     const isHome = location.pathname === '/' && !location.search;
@@ -29,7 +39,7 @@
     if (isHome || isCat || isSingle) {
         const style = document.createElement('style');
         style.id = 'ae-initial-hide';
-        style.innerHTML = 'html { background: #0b0b16 !important; } body { visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }';
+        style.innerHTML = 'html { background: #0b0b16 !important; color-scheme: dark !important; } body { visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }';
         document.documentElement.appendChild(style);
     }
 
@@ -45,6 +55,7 @@
     const API_RATE_INTERVAL = 300; // ms between requests
     const WATCH_PROGRESS_STORAGE_KEY = 'ae_watch_progress_v1';
     const FAVORITES_STORAGE_KEY = 'ae_favorites_v1';
+    const BLACKLIST_STORAGE_KEY = 'ae_blacklist_v1';
 
     // ===================== CORE HELPERS =====================
 
@@ -114,6 +125,12 @@
                     </div>
                 </div>
                 <div id="ae-modal-status" class="ae-modal-status"></div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+                    <button type="button" id="ae-export-data" class="ae-modal-btn"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg> 導出數據</button>
+                    <button type="button" id="ae-import-data" class="ae-modal-btn"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> 導入數據</button>
+                    <button type="button" id="ae-export-posters" class="ae-modal-btn"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg> 導出封面</button>
+                    <button type="button" id="ae-manage-blacklist" class="ae-modal-btn"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.7 18.3L18.3 5.7"/></svg> 排除列表</button>
+                </div>
                 <div class="ae-modal-actions">
                     <button type="button" id="ae-clear-bgm-cache" class="ae-modal-btn ae-modal-btn-danger">清除封面及評分緩存</button>
                     <span class="ae-modal-actions-spacer"></span>
@@ -134,6 +151,36 @@
         overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
         overlay.querySelector('.ae-modal-close').addEventListener('click', close);
         overlay.querySelector('#ae-close-settings').addEventListener('click', close);
+
+        overlay.querySelector('#ae-export-data').addEventListener('click', exportUserData);
+        overlay.querySelector('#ae-import-data').addEventListener('click', () => importUserData());
+        overlay.querySelector('#ae-manage-blacklist').addEventListener('click', () => openBlacklistModal());
+        overlay.querySelector('#ae-export-posters').addEventListener('click', () => {
+            const keys = GM_listValues();
+            const posters = {};
+            keys.forEach(k => {
+                if (!k.startsWith(BGM_CACHE_PREFIX)) return;
+                try {
+                    const raw = GM_getValue(k);
+                    const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                    if (data?.value?.poster) {
+                        const name = data.value.title || k.replace(BGM_CACHE_PREFIX, '');
+                        posters[name] = data.value.poster;
+                    }
+                } catch {}
+            });
+            const count = Object.keys(posters).length;
+            if (count === 0) { alert('沒有已緩存的封面數據'); return; }
+            const blob = new Blob([JSON.stringify(posters, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `anime1-posters-${new Date().toISOString().slice(0, 10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+            alert(`已導出 ${count} 張封面 URL`);
+        });
 
         overlay.querySelector('#ae-clear-bgm-cache').addEventListener('click', () => {
             if (confirm('確定要清除所有已緩存的封面與評分數據嗎？')) {
@@ -460,6 +507,139 @@
         if (!data.items[key].includes(toCategoryId)) data.items[key].push(toCategoryId);
         if (data.items[key].length === 0) delete data.items[key];
         setFavoritesData(data);
+    }
+
+    // ===================== BLACKLIST =====================
+    function getBlacklistData() {
+        try {
+            const raw = GM_getValue(BLACKLIST_STORAGE_KEY, '[]');
+            const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            return Array.isArray(arr) ? arr : [];
+        } catch { return []; }
+    }
+
+    function setBlacklistData(data) {
+        try { GM_setValue(BLACKLIST_STORAGE_KEY, JSON.stringify(data || [])); } catch {}
+    }
+
+    function isAnimeBlacklisted(catId) {
+        if (!catId) return false;
+        return getBlacklistData().some(item => item.catId === catId);
+    }
+
+    function addToBlacklist(catId, name) {
+        const data = getBlacklistData();
+        if (!data.some(item => item.catId === catId)) {
+            data.push({ catId, name: name || '' });
+            setBlacklistData(data);
+        }
+    }
+
+    function removeFromBlacklist(catId) {
+        setBlacklistData(getBlacklistData().filter(item => item.catId !== catId));
+    }
+
+    // ===================== DATA EXPORT/IMPORT =====================
+    function exportUserData() {
+        const data = {
+            version: 1,
+            exportedAt: new Date().toISOString(),
+            watchProgress: GM_getValue(WATCH_PROGRESS_STORAGE_KEY, '{}'),
+            favorites: GM_getValue(FAVORITES_STORAGE_KEY, null),
+            blacklist: GM_getValue(BLACKLIST_STORAGE_KEY, '[]')
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `anime1-data-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+    }
+
+    function importUserData(onComplete) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.addEventListener('change', () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    const data = JSON.parse(reader.result);
+                    if (!data || data.version !== 1) { alert('無效的數據文件格式'); return; }
+                    if (data.watchProgress) {
+                        const existing = JSON.parse(GM_getValue(WATCH_PROGRESS_STORAGE_KEY, '{}'));
+                        const imported = typeof data.watchProgress === 'string' ? JSON.parse(data.watchProgress) : data.watchProgress;
+                        Object.assign(existing, imported);
+                        GM_setValue(WATCH_PROGRESS_STORAGE_KEY, JSON.stringify(existing));
+                    }
+                    if (data.favorites) {
+                        const existing = getFavoritesData();
+                        const imported = typeof data.favorites === 'string' ? JSON.parse(data.favorites) : data.favorites;
+                        if (imported && Array.isArray(imported.categories)) {
+                            const catIds = new Set(existing.categories.map(c => c.id));
+                            imported.categories.forEach(c => { if (!catIds.has(c.id)) existing.categories.push(c); });
+                            Object.assign(existing.items, imported.items || {});
+                            setFavoritesData(existing);
+                        }
+                    }
+                    if (data.blacklist) {
+                        const existing = getBlacklistData();
+                        const imported = typeof data.blacklist === 'string' ? JSON.parse(data.blacklist) : data.blacklist;
+                        if (Array.isArray(imported)) {
+                            const existingIds = new Set(existing.map(item => item.catId));
+                            imported.forEach(item => {
+                                const id = typeof item === 'number' ? item : item?.catId;
+                                if (id && !existingIds.has(id)) existing.push({ catId: id, name: item?.name || '' });
+                            });
+                            setBlacklistData(existing);
+                        }
+                    }
+                    alert('導入成功！頁面即將重新整理。');
+                    if (typeof onComplete === 'function') onComplete();
+                    else location.reload();
+                } catch (e) {
+                    alert('導入失敗：' + e.message);
+                }
+            };
+            reader.readAsText(file);
+        });
+        input.click();
+    }
+
+    function openBlacklistModal(onClose) {
+        const buildList = () => {
+            const data = getBlacklistData();
+            if (data.length === 0) return '<div style="text-align:center;color:var(--ae-text-muted);padding:20px;">排除列表為空</div>';
+            return data.map(item => `
+                <div class="ae-fav-manage-item" data-cat-id="${item.catId}">
+                    <span class="ae-fav-manage-name">${item.name || 'ID:' + item.catId}</span>
+                    <button type="button" class="ae-fav-act-btn ae-bl-remove-btn" data-cat-id="${item.catId}" title="移除">✗</button>
+                </div>
+            `).join('');
+        };
+        createBaseModal({
+            id: 'ae-blacklist-modal', width: 480, title: '排除列表管理',
+            content: `<div class="ae-fav-manage-list" id="ae-bl-list">${buildList()}</div>`,
+            onActionHTML: `<span></span><button type="button" id="ae-bl-close-btn" class="ae-modal-btn ae-modal-btn-primary">關閉</button>`,
+            onActionClick: (overlay, close) => {
+                const origClose = close;
+                close = () => { origClose(); if (typeof onClose === 'function') onClose(); };
+                overlay.querySelector('#ae-bl-close-btn').addEventListener('click', close);
+                overlay.querySelector('#ae-bl-list').addEventListener('click', e => {
+                    const btn = e.target.closest('.ae-bl-remove-btn');
+                    if (!btn) return;
+                    const catId = parseInt(btn.dataset.catId, 10);
+                    if (Number.isFinite(catId)) {
+                        removeFromBlacklist(catId);
+                        overlay.querySelector('#ae-bl-list').innerHTML = buildList();
+                    }
+                });
+            }
+        });
     }
 
     function getCurrentCategoryId() {
@@ -1184,9 +1364,10 @@
 
                 <!-- Row 2: View Toggle -->
                 <div class="ae-view-row ae-segmented-container">
-                    <button class="ae-segment-btn active" data-filter="all">📺 番劇列表</button>
-                    <button class="ae-segment-btn" data-filter="continue">📅 觀看記錄</button>
-                    <button class="ae-segment-btn" data-filter="favorites">⭐ 收藏夾</button>
+                    <button class="ae-segment-btn active" data-filter="all"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg> 番劇列表</button>
+                    <button class="ae-segment-btn" data-filter="continue"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> 觀看記錄</button>
+                    <button class="ae-segment-btn" data-filter="favorites"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> 收藏夾</button>
+                    <button class="ae-segment-btn" data-filter="blacklist"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.7 18.3L18.3 5.7"/></svg> 排除列表</button>
                 </div>
 
                 <!-- Row 3: Filters & Sort -->
@@ -1205,8 +1386,8 @@
                         <span class="ae-filter-label">狀態：</span>
                         <select id="ae-status-select" class="ae-select ae-filter-select">
                             <option value="all">全部狀態</option>
-                            <option value="airing">🟢 連載中</option>
-                            <option value="completed">🌚 已完結</option>
+                            <option value="airing">○ 連載中</option>
+                            <option value="completed">● 已完結</option>
                         </select>
                     </div>
                     <div class="ae-filter-group">
@@ -1223,6 +1404,27 @@
                             ${subs.map(s => '<option value="' + s + '">' + s + '</option>').join('')}
                         </select>
                     </div>
+                    <div class="ae-filter-group">
+                        <span class="ae-filter-label">評分：</span>
+                        <select id="ae-score-select" class="ae-select ae-filter-select">
+                            <option value="0">不限</option>
+                            <option value="3">≥3分</option>
+                            <option value="4">≥4分</option>
+                            <option value="5">≥5分</option>
+                            <option value="6">≥6分</option>
+                            <option value="7">≥7分</option>
+                            <option value="8">≥8分</option>
+                            <option value="9">≥9分</option>
+                        </select>
+                    </div>
+                    <label class="ae-filter-check">
+                        <input type="checkbox" id="ae-include-unrated" checked>
+                        <span class="ae-filter-label">含無評分</span>
+                    </label>
+                    <label class="ae-filter-check">
+                        <input type="checkbox" id="ae-hide-watched">
+                        <span class="ae-filter-label">隱藏已看</span>
+                    </label>
                 </div>
 
                 <!-- Row 4: Favorites Panel -->
@@ -1232,6 +1434,7 @@
                 </div>
             </div>
 
+            <div class="ae-search-spacer" id="ae-search-spacer"></div>
             <div class="ae-grid" id="ae-grid"></div>
             <div class="ae-infinite-status" id="ae-infinite-status"></div>
             <div class="ae-scroll-sentinel" id="ae-scroll-sentinel" aria-hidden="true"></div>
@@ -1251,6 +1454,9 @@
         let currentSub = '';
         let currentSortMode = 'newest';
         let currentFavCategory = '';
+        let currentMinScore = 0;
+        let includeUnrated = true;
+        let hideWatched = false;
 
         let continueMetaByCat = new Map();
         let renderCursor = 0;
@@ -1325,9 +1531,14 @@
                 const matchesSearch = !query || query.split(/\s+/).every(q => searchStr.includes(q));
 
                 // Dimension 1: Large Scope (View)
-                const matchesView = currentFilter === 'all' ||
-                    (currentFilter === 'continue' && !!progress) ||
-                    (currentFilter === 'favorites' && isAnimeFavorited(a.catId) && (!currentFavCategory || getAnimeFavoriteCategories(a.catId).includes(currentFavCategory)));
+                const matchesView = currentFilter === 'blacklist' ? isAnimeBlacklisted(a.catId) :
+                    currentFilter === 'all' ? !isAnimeBlacklisted(a.catId) :
+                    currentFilter === 'continue' ? !!progress :
+                    currentFilter === 'favorites' ? (isAnimeFavorited(a.catId) && (!currentFavCategory || getAnimeFavoriteCategories(a.catId).includes(currentFavCategory))) :
+                    true;
+
+                // Hide watched filter (only in 'all' view)
+                if (hideWatched && currentFilter === 'all' && progress) return false;
 
                 // Dimension 2: Status Filter (Airing/Completed)
                 const isAiring = a.episodes.includes('連載中');
@@ -1339,7 +1550,22 @@
                 const matchesYear = !currentYear || a.year === currentYear;
                 const matchesSub = !currentSub || a.sub === currentSub;
 
-                return matchesSearch && matchesView && matchesStatus && matchesYear && matchesSub;
+                // Dimension 4: Score Filter (cache-based)
+                let matchesScore = true;
+                if (currentMinScore > 0 && currentFilter !== 'blacklist') {
+                    const cached = getCachedData(a.name);
+                    if (cached) {
+                        if (cached.score === null || cached.score === undefined) {
+                            matchesScore = includeUnrated;
+                        } else if (typeof cached.score === 'number') {
+                            matchesScore = cached.score >= currentMinScore;
+                        }
+                    } else {
+                        matchesScore = includeUnrated;
+                    }
+                }
+
+                return matchesSearch && matchesView && matchesStatus && matchesYear && matchesSub && matchesScore;
             });
 
             // Final Sorting
@@ -1409,7 +1635,13 @@
             const epMatch = anime.episodes.match(/\((\d+)\)/) || anime.episodes.match(/^(\d[\d-]*)$/);
             const epText = epMatch ? epMatch[1] : '';
             const epFallback = String(anime.episodes || '').replace(/連載中|已完結|完結|\(|\)/g, '').trim();
-            const yearText = anime.year || '未知年份';
+            const yearText = anime.year || '';
+            const yearBadges = (() => {
+                const years = (anime.year || '').match(/\d{4}/g);
+                if (!years || years.length === 0) return '';
+                const unique = [...new Set(years.map(y => y.slice(2)))];
+                return unique.map(y => `<span class="ae-year-circle">${y}</span>`).join('');
+            })();
             const episodeMetaText = epText
                 ? (isAiring ? `EP ${epText}` : epText)
                 : (epFallback ? (isAiring ? `EP ${epFallback}` : epFallback) : (isAiring ? 'EP ?' : '?'));
@@ -1424,6 +1656,10 @@
                     <div class="ae-card-poster-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg></div>
                     <img class="ae-card-img" data-name="${anime.name}" alt="${anime.name}" loading="lazy">
                     <div class="ae-card-overlay"></div>
+                    ${yearBadges ? `<div class="ae-year-badges">${yearBadges}</div>` : ''}
+                    ${currentFilter === 'all' ? `<button type="button" class="ae-card-act-btn ae-card-block-btn" data-cat-id="${anime.catId}" title="排除此番"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.7 18.3L18.3 5.7"/></svg></button>` : ''}
+                    ${currentFilter === 'blacklist' ? `<button type="button" class="ae-card-act-btn ae-card-unblock-btn" data-cat-id="${anime.catId}" title="取消排除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 9l6 6m0-6l-6 6"/><circle cx="12" cy="12" r="9"/></svg></button>` : ''}
+                    ${currentFilter !== 'blacklist' ? `<button type="button" class="ae-card-act-btn ae-card-fav-btn ${isAnimeFavorited(anime.catId) ? 'is-fav' : ''}" data-cat-id="${anime.catId}" title="${isAnimeFavorited(anime.catId) ? '管理收藏' : '加入收藏'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></button>` : ''}
                     ${progressText ? `<span class="ae-badge ae-badge-progress">${progressText}</span>` : ''}
                     ${(progressText && currentFilter === 'continue') ? '<button type="button" class="ae-progress-delete" title="刪除觀看記錄" aria-label="刪除觀看記錄">×</button>' : ''}
                     ${currentFilter === 'favorites' ? `<button type="button" class="ae-progress-delete ae-fav-delete" title="取消收藏" aria-label="取消收藏" data-cat-id="${anime.catId}">×</button>` : ''}
@@ -1431,7 +1667,6 @@
                 <div class="ae-card-info">
                     <h3 class="ae-card-title">${anime.isR18 ? '🔞 ' : ''}${anime.name}</h3>
                     <div class="ae-card-meta">
-                        <span class="ae-meta-tag">${yearText}</span>
                         <span class="ae-meta-episode ${episodeMetaClass}">${episodeMetaText}</span>
                         <span class="ae-meta-score" style="display:none;"></span>
                     </div>
@@ -1450,6 +1685,11 @@
                     const scoreValue = typeof data.score === 'number' ? data.score.toFixed(1) : data.score;
                     scoreMeta.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>${scoreValue}`;
                     scoreMeta.style.display = 'inline-flex';
+                }
+                if (currentMinScore > 0 && card) {
+                    const s = data.score;
+                    const hide = (s === null || s === undefined) ? !includeUnrated : (typeof s === 'number' && s < currentMinScore);
+                    if (hide) { card.style.display = 'none'; return; }
                 }
                 if (data.poster) {
                     const showImage = (src) => {
@@ -1482,6 +1722,9 @@
         document.getElementById('ae-status-select')?.addEventListener('change', (e) => { currentStatus = e.target.value; filterAndRender(); });
         document.getElementById('ae-year-select')?.addEventListener('change', (e) => { currentYear = e.target.value; filterAndRender(); });
         document.getElementById('ae-sub-select')?.addEventListener('change', (e) => { currentSub = e.target.value; filterAndRender(); });
+        document.getElementById('ae-score-select')?.addEventListener('change', (e) => { currentMinScore = parseInt(e.target.value, 10) || 0; filterAndRender(); });
+        document.getElementById('ae-include-unrated')?.addEventListener('change', (e) => { includeUnrated = e.target.checked; filterAndRender(); });
+        document.getElementById('ae-hide-watched')?.addEventListener('change', (e) => { hideWatched = e.target.checked; filterAndRender(); });
 
         document.querySelectorAll('.ae-segment-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -1496,6 +1739,42 @@
         document.getElementById('ae-fav-manage-btn')?.addEventListener('click', () => { openFavManageModal(() => { filterAndRender(); }); });
 
         grid.addEventListener('click', (event) => {
+            const cardFavBtn = event.target.closest('.ae-card-fav-btn');
+            if (cardFavBtn) {
+                event.preventDefault(); event.stopPropagation();
+                const card = cardFavBtn.closest('.ae-card'), index = Number(card.dataset.index), anime = filteredList[index];
+                if (anime) {
+                    openFavoritesModal({ catId: anime.catId, name: anime.name });
+                    const checkClosed = () => { if (!document.getElementById('ae-fav-modal')) filterAndRender(); else requestAnimationFrame(checkClosed); };
+                    requestAnimationFrame(checkClosed);
+                }
+                return;
+            }
+            const cardBlockBtn = event.target.closest('.ae-card-block-btn');
+            if (cardBlockBtn) {
+                event.preventDefault(); event.stopPropagation();
+                const card = cardBlockBtn.closest('.ae-card'), index = Number(card.dataset.index), anime = filteredList[index];
+                if (anime) {
+                    addToBlacklist(anime.catId, anime.name);
+                    card.style.transition = 'opacity 0.3s, transform 0.3s';
+                    card.style.opacity = '0';
+                    card.style.transform = 'scale(0.8)';
+                    setTimeout(() => filterAndRender(), 300);
+                    showToast(`已排除「${anime.name}」`);
+                }
+                return;
+            }
+            const cardUnblockBtn = event.target.closest('.ae-card-unblock-btn');
+            if (cardUnblockBtn) {
+                event.preventDefault(); event.stopPropagation();
+                const card = cardUnblockBtn.closest('.ae-card'), index = Number(card.dataset.index), anime = filteredList[index];
+                if (anime) {
+                    removeFromBlacklist(anime.catId);
+                    filterAndRender();
+                    showToast(`已取消排除「${anime.name}」`);
+                }
+                return;
+            }
             const favDelBtn = event.target.closest('.ae-fav-delete');
             if (favDelBtn) {
                 event.preventDefault(); event.stopPropagation();
@@ -1584,7 +1863,64 @@
                 grid.ondragend = e => { e.target.closest('.ae-card')?.classList.remove('ae-dragging'); document.querySelectorAll('.ae-fav-cat-tab').forEach(t => t.classList.remove('ae-drag-over')); };
             }
         }
+        document.querySelectorAll('.ae-search-section .ae-select').forEach(upgradeSelectToCustom);
+
         filterAndRender();
+
+        // Sync spacer height with fixed search section
+        const searchSection = document.querySelector('.ae-search-section');
+        const spacer = document.getElementById('ae-search-spacer');
+        if (searchSection && spacer) {
+            const updateSpacer = () => { spacer.style.height = (searchSection.offsetHeight + 16) + 'px'; };
+            updateSpacer();
+            if ('ResizeObserver' in window) new ResizeObserver(updateSpacer).observe(searchSection);
+            window.addEventListener('resize', updateSpacer);
+        }
+    }
+
+    function upgradeSelectToCustom(selectEl) {
+        if (!selectEl || selectEl.dataset.upgraded) return;
+        selectEl.dataset.upgraded = '1';
+        selectEl.style.display = 'none';
+        const wrapper = document.createElement('div');
+        wrapper.className = 'ae-cs-wrap';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ae-cs-btn';
+        const panel = document.createElement('div');
+        panel.className = 'ae-cs-panel';
+        const chevron = `<svg class="ae-cs-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+        const sync = () => {
+            const opt = selectEl.options[selectEl.selectedIndex];
+            btn.innerHTML = `<span class="ae-cs-text">${opt ? opt.textContent : ''}</span>${chevron}`;
+        };
+        const build = () => {
+            panel.innerHTML = '';
+            [...selectEl.options].forEach((opt, i) => {
+                const item = document.createElement('div');
+                item.className = 'ae-cs-item' + (i === selectEl.selectedIndex ? ' active' : '');
+                item.textContent = opt.textContent;
+                item.addEventListener('click', e => {
+                    e.stopPropagation();
+                    selectEl.selectedIndex = i;
+                    selectEl.dispatchEvent(new Event('change'));
+                    sync();
+                    panel.classList.remove('open');
+                });
+                panel.appendChild(item);
+            });
+        };
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            document.querySelectorAll('.ae-cs-panel.open').forEach(p => p.classList.remove('open'));
+            build();
+            panel.classList.toggle('open');
+        });
+        document.addEventListener('click', () => panel.classList.remove('open'));
+        wrapper.appendChild(btn);
+        wrapper.appendChild(panel);
+        selectEl.parentNode.insertBefore(wrapper, selectEl);
+        sync();
     }
 
     function fetchAnimeList() {
@@ -1712,6 +2048,14 @@
     const HOMEPAGE_CSS = `
         #masthead, .entry-header { display: none !important; }
 
+        /* Fix sticky: ancestors must not have overflow hidden */
+        body.home #page, body.home #content, body.home .site-content,
+        body.home #primary, body.home #main, body.home article,
+        body.home .entry-content, body.home #anime-enhanced-home {
+            overflow: visible !important;
+            overflow-x: clip !important;
+        }
+
         /* Jump Ball */
         .ae-page-jump-ball {
             position: fixed; right: 14px; top: 50%; transform: translateY(-50%); z-index: 9999;
@@ -1734,7 +2078,7 @@
         @keyframes ae-spin { to { transform: rotate(360deg); } }
 
         /* New Controls Layered Layout */
-        .ae-search-section { margin-bottom: 24px; display: flex; flex-direction: column; gap: 14px; position: sticky; top: 0; z-index: 10; background: var(--ae-bg-base); padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .ae-search-section { display: flex; flex-direction: column; gap: 14px; position: fixed; top: 0; left: 0; right: 0; z-index: 100; max-width: 1400px; margin: 0 auto; background: rgba(11,11,22,0.95); backdrop-filter: blur(16px) saturate(1.2); padding: 12px 20px; border-bottom: 1px solid rgba(var(--ae-primary-rgb),0.15); box-shadow: 0 4px 24px rgba(0,0,0,0.5); }
         
         /* Row 1: Search & Sort */
         .ae-controls-row { display: flex; gap: 12px; align-items: center; }
@@ -1755,15 +2099,45 @@
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='feather feather-chevron-down' viewBox='0 0 24 24'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
             background-repeat: no-repeat; background-position: right 10px center; background-size: 14px;
         }
-        .ae-select option { background: #1e293b; color: #fff; }
+        .ae-select option { background: #141428 !important; color: #e2e8f0 !important; padding: 6px 12px; }
+        .ae-select option:checked { background: rgba(var(--ae-primary-rgb),0.3) !important; color: #fff !important; }
+        .ae-select option:hover { background: rgba(var(--ae-primary-rgb),0.2) !important; }
         .ae-select:hover { border-color: var(--ae-primary); background: var(--ae-bg-hover); }
+
+        /* Custom Select Dropdown */
+        .ae-cs-wrap { position: relative; display: inline-block; }
+        .ae-cs-btn {
+            appearance: none; background: var(--ae-bg-surface); border: 1px solid var(--ae-border-primary);
+            border-radius: 8px; padding: 6px 26px 6px 10px; color: var(--ae-text-secondary);
+            font-size: 12px; cursor: pointer; font-family: inherit; white-space: nowrap;
+            display: inline-flex; align-items: center; gap: 6px; transition: 0.2s; backdrop-filter: blur(12px);
+        }
+        .ae-cs-btn:hover { border-color: var(--ae-primary); background: var(--ae-bg-hover); }
+        .ae-cs-chevron { flex-shrink: 0; opacity: 0.6; transition: transform 0.2s; }
+        .ae-cs-panel.open ~ .ae-cs-btn .ae-cs-chevron, .ae-cs-wrap:has(.ae-cs-panel.open) .ae-cs-chevron { transform: rotate(180deg); }
+        .ae-cs-panel {
+            display: none; position: absolute; top: calc(100% + 4px); left: 0; min-width: calc(100% + 20px);
+            background: #141428; border: 1px solid var(--ae-border-primary); border-radius: 10px;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.6); z-index: 200; overflow: hidden;
+            max-height: 260px; overflow-y: auto; backdrop-filter: blur(16px);
+        }
+        .ae-cs-panel.open { display: block; }
+        .ae-cs-item {
+            padding: 8px 14px; color: var(--ae-text-secondary); font-size: 13px; cursor: pointer;
+            transition: background 0.15s, color 0.15s; white-space: nowrap;
+        }
+        .ae-cs-item:hover { background: rgba(var(--ae-primary-rgb),0.15); color: #fff; }
+        .ae-cs-item.active { background: rgba(var(--ae-primary-rgb),0.25); color: #fff; font-weight: 600; }
 
         /* Row 2: View Segment */
         .ae-view-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
         .ae-segment-btn {
             padding: 8px 16px; border-radius: 10px; border: 1px solid var(--ae-border-light);
             background: rgba(255,255,255,0.03); color: var(--ae-text-secondary); font-size: 13px; font-weight: 500; cursor: pointer; transition: 0.25s;
+            display: inline-flex; align-items: center; gap: 5px;
         }
+        .ae-segment-btn svg, .ae-modal-btn svg { vertical-align: -2px; flex-shrink: 0; }
+        .ae-modal-btn { display: inline-flex; align-items: center; gap: 5px; }
         .ae-segment-btn:hover { background: var(--ae-bg-hover); border-color: var(--ae-border-primary); }
         .ae-segment-btn.active { background: var(--ae-primary-grad); color: #fff; border-color: transparent; box-shadow: 0 4px 12px rgba(var(--ae-primary-rgb), 0.3); }
         .ae-segment-btn[data-filter="continue"].active { background: linear-gradient(135deg, #059669, #10b981); }
@@ -1827,10 +2201,9 @@
         .ae-card-info { padding: 12px; }
         .ae-card-title { font-size: 13.5px!important; font-weight: 600!important; margin: 0 0 6px!important; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--ae-text-primary)!important; }
         .ae-card-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-        .ae-meta-tag, .ae-meta-episode, .ae-meta-score {
+        .ae-meta-episode, .ae-meta-score {
             font-size: 11px; padding: 2px 8px; border-radius: 999px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid transparent;
         }
-        .ae-meta-tag { background: rgba(var(--ae-primary-rgb),0.1); color: rgba(var(--ae-primary-rgb),0.86); border-color: rgba(var(--ae-primary-rgb),0.36); }
         .ae-meta-episode.is-airing { background: rgba(var(--ae-success-rgb),0.18); color: #4ade80; border: 1px solid rgba(var(--ae-success-rgb),0.42); }
         .ae-meta-episode.is-complete { background: rgba(59,130,246,0.16); color: #93c5fd; border: 1px solid rgba(59,130,246,0.36); }
         .ae-meta-score {
@@ -1839,6 +2212,44 @@
             border: 1px solid rgba(245, 158, 11, 0.4);
         }
         .ae-meta-score svg { width: 11px; height: 11px; fill: currentColor; margin-bottom: 1px; }
+
+        /* Year Circle Badges (top-left of poster) */
+        .ae-year-badges { position: absolute; top: 8px; left: 8px; display: flex; gap: 4px; z-index: 3; }
+        .ae-year-badges { opacity: 0; transition: opacity 0.2s; }
+        .ae-card:hover .ae-year-badges { opacity: 1; }
+        .ae-year-circle {
+            width: 30px; height: 30px; border-radius: 50%;
+            background: radial-gradient(circle at 35% 30%, rgba(147,112,240,0.95), rgba(99,30,210,0.95) 70%, rgba(60,20,150,0.98));
+            border: 1.5px solid rgba(196,181,253,0.4);
+            box-shadow: 0 2px 10px rgba(88,28,235,0.4), inset 0 1px 0 rgba(255,255,255,1);
+            color: #fff; font-size: 11px; font-weight: 700; letter-spacing: -0.5px;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+
+        /* Card Action Buttons */
+        .ae-card-act-btn { position: absolute; width: 30px; height: 30px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.2); background: rgba(15,23,42,0.65); backdrop-filter: blur(8px); color: rgba(255,255,255,0.75); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s; padding: 0; z-index: 3; opacity: 0; pointer-events: none; }
+        .ae-card:hover .ae-card-act-btn { opacity: 1; pointer-events: auto; }
+        .ae-card-act-btn svg { width: 14px; height: 14px; fill: none !important; stroke: currentColor !important; stroke-width: 2 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+        .ae-card-act-btn:hover { transform: scale(1.15); }
+
+        /* Fav button: bottom-right */
+        .ae-card-fav-btn { bottom: 8px; right: 8px; }
+        .ae-card-fav-btn:hover, .ae-card-fav-btn.is-fav { color: var(--ae-gold); border-color: rgba(var(--ae-gold-rgb),0.5); background: rgba(var(--ae-gold-rgb),0.25); }
+        .ae-card-fav-btn.is-fav { opacity: 1; pointer-events: auto; }
+        .ae-card-fav-btn.is-fav svg { fill: currentColor; stroke: currentColor; }
+
+        /* Block button: top-right */
+        .ae-card-block-btn { top: 8px; right: 8px; }
+        .ae-card-block-btn:hover { color: #ef4444; border-color: rgba(239,68,68,0.5); background: rgba(239,68,68,0.25); }
+        .ae-card-unblock-btn { top: 8px; right: 8px; }
+        .ae-card-unblock-btn:hover { color: #10b981; border-color: rgba(16,185,129,0.5); background: rgba(16,185,129,0.25); }
+
+        /* Filter Checkbox */
+        .ae-filter-check { display: flex; align-items: center; gap: 4px; cursor: pointer; flex-shrink: 0; }
+        .ae-filter-check input[type="checkbox"] { accent-color: var(--ae-primary); width: 14px; height: 14px; cursor: pointer; }
+
+        /* Blacklist tab styling */
+        .ae-segment-btn[data-filter="blacklist"].active { background: linear-gradient(135deg, #dc2626, #ef4444); }
 
         /* Dark mode generic overrides */
         :root.ae-dark #ae-search-input { color: var(--ae-text-primary)!important; }
