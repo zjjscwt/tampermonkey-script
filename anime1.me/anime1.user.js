@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      4.0.4
-// @description  封面+簡中繁中名搜索+收藏夾+觀看記錄+選集+快捷鍵+播放記憶
+// @version      4.1.0
+// @description  封面+簡中繁中名搜索+收藏夾+觀看記錄+選集+快捷鍵+播放記憶+黑名單
 // @author       Ryan
 // @match        https://anime1.me/*
 // @grant        GM_xmlhttpRequest
@@ -21,6 +21,13 @@
 (function () {
     'use strict';
 
+    // 0. Force dark color-scheme at earliest point (before DOM builds)
+    document.documentElement.style.colorScheme = 'dark';
+    const csMeta = document.createElement('meta');
+    csMeta.name = 'color-scheme';
+    csMeta.content = 'dark';
+    document.documentElement.appendChild(csMeta);
+
     // 1. Immediate hide to prevent flashing original content
     const isHome = location.pathname === '/' && !location.search;
     const isCat = location.search.includes('cat=');
@@ -28,7 +35,7 @@
     if (isHome || isCat || isSingle) {
         const style = document.createElement('style');
         style.id = 'ae-initial-hide';
-        style.innerHTML = 'html { background: #0b0b16 !important; } body { visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }';
+        style.innerHTML = 'html { background: #0b0b16 !important; color-scheme: dark !important; } body { visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }';
         document.documentElement.appendChild(style);
     }
 
@@ -36,6 +43,7 @@
     const BGM_USER_AGENT = 'Anime1Enhancer/3.0.1 (https://anime1.me/)';
     const WATCH_PROGRESS_STORAGE_KEY = 'ae_watch_progress_v1';
     const FAVORITES_STORAGE_KEY = 'ae_favorites_v1';
+    const BLACKLIST_STORAGE_KEY = 'ae_blacklist_v1';
     const ENHANCED_JSON_URL = 'https://raw.githubusercontent.com/zjjscwt/anime1-enhanced/main/animelist-enhanced.json';
 
     // ===================== CORE HELPERS =====================
@@ -59,7 +67,7 @@
         }
     }
 
-    const createBaseModal = ({ id, width, title, content, onActionHTML, onActionClick, onInit }) => {
+    const createBaseModal = ({ id, width, title, content, onActionHTML, onActionClick, onInit, onClose }) => {
         const existing = document.getElementById(id); if (existing) existing.remove();
         const overlay = document.createElement('div'); overlay.id = id; overlay.className = 'ae-modal-overlay';
         overlay.innerHTML = `<div class="ae-modal-panel ae-fav-modal-panel" style="max-width:${width || 420}px" role="dialog" aria-modal="true">
@@ -69,7 +77,10 @@
             ${onActionHTML ? `<div class="ae-modal-footer" style="display:flex; justify-content:space-between; margin-top:16px;">${onActionHTML}</div>` : ''}
         </div>`;
         document.body.appendChild(overlay);
-        const close = () => { overlay.remove(); };
+        const close = () => {
+            overlay.remove();
+            if (typeof onClose === 'function') onClose();
+        };
         overlay.querySelector('.ae-modal-close').addEventListener('click', close);
         overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
         const onKey = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
@@ -83,13 +94,13 @@
         if (existing) return;
 
         const initialLang = getDisplayLanguage();
-        const overlay = document.createElement('div');
-        overlay.id = 'ae-general-modal';
-        overlay.className = 'ae-modal-overlay';
-        overlay.innerHTML = `
-            <div class="ae-modal-panel" role="dialog" aria-modal="true" aria-labelledby="ae-modal-title">
-                <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
-                <h2 class="ae-modal-title" id="ae-modal-title">Anime1 增強設定</h2>
+        let currentLang = initialLang;
+
+        createBaseModal({
+            id: 'ae-general-modal',
+            width: 480,
+            title: 'Anime1 增強設定',
+            content: `
                 <div class="ae-modal-field" style="margin-bottom:16px;">
                     <label style="display:block; font-size:14px; font-weight:600; margin-bottom:8px; color:#ddd6fe;">動漫名稱及封面顯示語言：</label>
                     <div class="ae-radio-group">
@@ -106,20 +117,21 @@
                     <p style="font-size:13px; color:var(--ae-text-secondary); line-height:1.6; margin-bottom:12px;">注：在简体中文模式下，部分封面没有简体版，仍会回退为繁体封面</p>
                 </div>
                 <div class="ae-modal-field" style="margin-bottom:16px;">
-                    <label style="display:block; font-size:14px; font-weight:600; margin-bottom:8px; color:#ddd6fe;">收藏夾備份與還原：</label>
+                    <label style="display:block; font-size:14px; font-weight:600; margin-bottom:8px; color:#ddd6fe;">數據備份與還原（包含收藏夾、觀看記錄、黑名單）：</label>
                     <div class="ae-flex-row" style="gap:10px;">
-                        <button type="button" id="ae-export-fav" class="ae-modal-btn" style="flex:1;">匯出收藏夾</button>
-                        <button type="button" id="ae-import-fav" class="ae-modal-btn" style="flex:1;">匯入收藏夾</button>
-                        <input type="file" id="ae-import-fav-file" accept=".json" style="display:none;">
+                        <button type="button" id="ae-export-data" class="ae-modal-btn" style="flex:1;">匯出數據</button>
+                        <button type="button" id="ae-import-data" class="ae-modal-btn" style="flex:1;">匯入數據</button>
+                        <input type="file" id="ae-import-data-file" accept=".json" style="display:none;">
                     </div>
                 </div>
+
                 <div class="ae-modal-field">
                     <div class="ae-modal-shortcuts">
                         <h3>播放器快捷鍵說明：</h3>
                         <ul>
                             <li><b>W</b>：網頁全屏</li>
                             <li><b>Space</b>：播放 / 暫停</li>
-                            <li><b>S 鍵</b>：切換倍速</li>
+                            <li><b>S</b>：切換倍速</li>
                             <li><b>F</b>：系統全屏</li>
                             <li><b>S+↑/↓</b>：微調倍速</li>
                             <li><b>M</b>：切換靜音</li>
@@ -129,128 +141,170 @@
                     </div>
                 </div>
                 <div id="ae-modal-status" class="ae-modal-status"></div>
-                <div class="ae-modal-actions">
-                    <button type="button" id="ae-clear-bgm-cache" class="ae-modal-btn ae-modal-btn-danger">清除緩存</button>
-                    <span class="ae-modal-actions-spacer"></span>
-                    <button type="button" id="ae-close-settings" class="ae-modal-btn ae-modal-btn-primary">確定</button>
-                </div>
-            </div>
-        `;
+            `,
+            onActionHTML: `
+                <button type="button" id="ae-clear-bgm-cache" class="ae-modal-btn ae-modal-btn-danger">清除緩存</button>
+                <button type="button" id="ae-close-settings" class="ae-modal-btn ae-modal-btn-primary">確定</button>
+            `,
+            onClose: () => {
+                if (currentLang !== initialLang) {
+                    location.reload();
+                }
+            },
+            onInit: (overlay, close) => {
+                const radioLabels = overlay.querySelectorAll('.ae-radio-label');
+                const radios = overlay.querySelectorAll('input[name="ae-lang"]');
+                radios.forEach(radio => {
+                    radio.addEventListener('change', (e) => {
+                        currentLang = e.target.value;
+                        setDisplayLanguage(currentLang);
 
-        document.body.appendChild(overlay);
+                        // Update selection classes on parent labels
+                        radioLabels.forEach(label => {
+                            const input = label.querySelector('input');
+                            if (input.checked) {
+                                label.classList.add('is-selected');
+                            } else {
+                                label.classList.remove('is-selected');
+                            }
+                        });
+                    });
+                });
 
-        let currentLang = initialLang;
-        const radioLabels = overlay.querySelectorAll('.ae-radio-label');
-        const radios = overlay.querySelectorAll('input[name="ae-lang"]');
-        radios.forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                currentLang = e.target.value;
-                setDisplayLanguage(currentLang);
+                overlay.querySelector('#ae-close-settings').addEventListener('click', close);
 
-                // Update selection classes on parent labels
-                radioLabels.forEach(label => {
-                    const input = label.querySelector('input');
-                    if (input.checked) {
-                        label.classList.add('is-selected');
-                    } else {
-                        label.classList.remove('is-selected');
+                overlay.querySelector('#ae-clear-bgm-cache').addEventListener('click', () => {
+                    if (confirm('確定要清除所有已緩存的動畫增強數據嗎？')) {
+                        try {
+                            GM_deleteValue('ae_enhanced_catalog');
+                            GM_deleteValue('ae_enhanced_catalog_time');
+                            alert('成功清除動畫增強數據緩存，頁面即將重新整理。');
+                            location.reload();
+                        } catch (e) {
+                            alert('清除失敗：' + e.message);
+                        }
                     }
                 });
-            });
-        });
 
-        const close = () => {
-            document.removeEventListener('keydown', onKeydown);
-            overlay.remove();
-            if (currentLang !== initialLang) {
-                location.reload();
+                // 數據備份與還原
+                overlay.querySelector('#ae-export-data').addEventListener('click', () => {
+                    try {
+                        const favData = getFavoritesData();
+                        const watchProgress = getWatchProgressMap();
+                        const blacklist = getBlacklistData();
+                        const backup = {
+                            type: 'anime1_enhanced_backup',
+                            version: '2.0',
+                            exportedAt: new Date().toISOString(),
+                            data: favData,
+                            favorites: favData,
+                            watchProgress: watchProgress,
+                            blacklist: blacklist
+                        };
+                        const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `anime1_backup_${new Date().toISOString().slice(0, 10)}.json`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                    } catch (e) {
+                        alert('匯出失敗：' + e.message);
+                    }
+                });
+
+                const fileInput = overlay.querySelector('#ae-import-data-file');
+                overlay.querySelector('#ae-import-data').addEventListener('click', () => {
+                    fileInput.click();
+                });
+
+                fileInput.addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        try {
+                            const backup = JSON.parse(event.target.result);
+                            if (backup.type !== 'anime1_enhanced_backup') {
+                                throw new Error('無效的備份檔案格式。');
+                            }
+
+                            // 1. Parse and validate Favorites
+                            let favoritesToImport = null;
+                            const rawFav = backup.favorites || backup.data;
+                            if (rawFav && typeof rawFav === 'object') {
+                                if (Array.isArray(rawFav.categories) && typeof rawFav.items === 'object') {
+                                    favoritesToImport = rawFav;
+                                    if (!favoritesToImport.categories.find(c => c.id === 'default')) {
+                                        favoritesToImport.categories.unshift({ id: 'default', name: '默認分類', isDefault: true });
+                                    }
+                                }
+                            }
+
+                            // 2. Parse and validate Watch Progress
+                            let watchProgressToImport = null;
+                            if (backup.watchProgress && typeof backup.watchProgress === 'object' && !Array.isArray(backup.watchProgress)) {
+                                watchProgressToImport = backup.watchProgress;
+                            }
+
+                            // 3. Parse and validate Blacklist
+                            let blacklistToImport = null;
+                            if (backup.blacklist && Array.isArray(backup.blacklist)) {
+                                blacklistToImport = backup.blacklist;
+                            }
+
+                            // Build confirm detail text
+                            const details = [];
+                            if (favoritesToImport) {
+                                const catCount = favoritesToImport.categories.length;
+                                const itemCount = Object.values(favoritesToImport.items).reduce((acc, arr) => acc + (Array.isArray(arr) ? arr.length : 0), 0);
+                                details.push(`• 收藏夾 (${catCount} 個分類，共 ${itemCount} 部動漫)`);
+                            }
+                            if (watchProgressToImport) {
+                                const progressCount = Object.keys(watchProgressToImport).length;
+                                details.push(`• 觀看記錄 (${progressCount} 條記錄)`);
+                            }
+                            if (blacklistToImport) {
+                                const blacklistCount = blacklistToImport.length;
+                                details.push(`• 黑名單 (${blacklistCount} 個項目)`);
+                            }
+
+                            if (details.length === 0) {
+                                throw new Error('未在備份檔案中找到任何有效的數據。');
+                            }
+
+                            const confirmMsg = `檢測到備份檔案包含以下數據：\n${details.join('\n')}\n\n匯入將會覆蓋您目前的對應數據，確定要繼續嗎？`;
+
+                            if (confirm(confirmMsg)) {
+                                if (favoritesToImport) {
+                                    setFavoritesData(favoritesToImport);
+                                }
+                                if (watchProgressToImport) {
+                                    setWatchProgressMap(watchProgressToImport);
+                                }
+                                if (blacklistToImport) {
+                                    setBlacklistData(blacklistToImport);
+                                }
+                                alert('數據匯入成功，頁面即將重新整理。');
+                                location.reload();
+                            }
+                        } catch (err) {
+                            alert('匯入失敗：' + err.message);
+                        }
+                        fileInput.value = '';
+                    };
+                    reader.onerror = () => {
+                        alert('讀取檔案失敗。');
+                        fileInput.value = '';
+                    };
+                    reader.readAsText(file);
+                });
+
+
             }
-        };
-        const onKeydown = (e) => { if (e.key === 'Escape') close(); };
-        document.addEventListener('keydown', onKeydown);
-
-        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-        overlay.querySelector('.ae-modal-close').addEventListener('click', close);
-        overlay.querySelector('#ae-close-settings').addEventListener('click', close);
-
-        overlay.querySelector('#ae-clear-bgm-cache').addEventListener('click', () => {
-            if (confirm('確定要清除所有已緩存的動畫增強數據嗎？')) {
-                try {
-                    GM_deleteValue('ae_enhanced_catalog');
-                    GM_deleteValue('ae_enhanced_catalog_time');
-                    alert('成功清除動畫增強數據緩存，頁面即將重新整理。');
-                    location.reload();
-                } catch (e) {
-                    alert('清除失敗：' + e.message);
-                }
-            }
-        });
-
-        // 匯出與匯入收藏夾
-        overlay.querySelector('#ae-export-fav').addEventListener('click', () => {
-            try {
-                const favData = getFavoritesData();
-                const backup = {
-                    type: 'anime1_enhanced_backup',
-                    version: '1.0',
-                    exportedAt: new Date().toISOString(),
-                    data: favData
-                };
-                const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `anime1_favorites_${new Date().toISOString().slice(0, 10)}.json`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            } catch (e) {
-                alert('匯出失敗：' + e.message);
-            }
-        });
-
-        const fileInput = overlay.querySelector('#ae-import-fav-file');
-        overlay.querySelector('#ae-import-fav').addEventListener('click', () => {
-            fileInput.click();
-        });
-
-        fileInput.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                try {
-                    const backup = JSON.parse(event.target.result);
-                    if (backup.type !== 'anime1_enhanced_backup') {
-                        throw new Error('無效的備份檔案格式。');
-                    }
-                    const data = backup.data;
-                    if (!data || !Array.isArray(data.categories) || typeof data.items !== 'object') {
-                        throw new Error('備份檔案數據損壞。');
-                    }
-
-                    // Validate and fix default category if missing
-                    if (!data.categories.find(c => c.id === 'default')) {
-                        data.categories.unshift({ id: 'default', name: '默認分類', isDefault: true });
-                    }
-
-                    if (confirm('匯入備份將會覆蓋您目前的收藏夾數據，確定要繼續嗎？')) {
-                        setFavoritesData(data);
-                        alert('收藏夾匯入成功，頁面即將重新整理。');
-                        location.reload();
-                    }
-                } catch (err) {
-                    alert('匯入失敗：' + err.message);
-                }
-                fileInput.value = '';
-            };
-            reader.onerror = () => {
-                alert('讀取檔案失敗。');
-                fileInput.value = '';
-            };
-            reader.readAsText(file);
         });
     }
 
@@ -387,28 +441,8 @@
         controlRoot.appendChild(btn);
     }
 
-    function getCacheKey(name) {
-        return BGM_CACHE_PREFIX + name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').substring(0, 80);
-    }
-
-    function getCachedData(name) {
-        try {
-            const raw = GM_getValue(getCacheKey(name), null);
-            if (!raw) return null;
-            const data = JSON.parse(raw);
-            if (Date.now() - data.timestamp > CACHE_EXPIRY) return null;
-            return data.value;
-        } catch { return null; }
-    }
-
-    function setCachedData(name, value) {
-        try {
-            GM_setValue(getCacheKey(name), JSON.stringify({ timestamp: Date.now(), value }));
-        } catch { /* quota exceeded, ignore */ }
-    }
-
     function getDisplayLanguage() {
-        return GM_getValue('ae_display_lang', 'zh-hans');
+        return GM_getValue('ae_display_lang', 'zh-hant');
     }
 
     function setDisplayLanguage(lang) {
@@ -587,6 +621,35 @@
         setFavoritesData(data);
     }
 
+    // ===================== BLACKLIST =====================
+    function getBlacklistData() {
+        try {
+            const raw = GM_getValue(BLACKLIST_STORAGE_KEY, '[]');
+            return JSON.parse(raw);
+        } catch { return []; }
+    }
+    function setBlacklistData(data) {
+        try { GM_setValue(BLACKLIST_STORAGE_KEY, JSON.stringify(data || [])); } catch { }
+    }
+    function isAnimeBlacklisted(catId) {
+        if (!catId) return false;
+        return getBlacklistData().some(item => item.catId === catId);
+    }
+    function addToBlacklist(catId, name) {
+        if (!catId) return;
+        const data = getBlacklistData();
+        if (!data.some(item => item.catId === catId)) {
+            data.push({ catId, name, addedAt: Date.now() });
+            setBlacklistData(data);
+        }
+    }
+    function removeFromBlacklist(catId) {
+        if (!catId) return;
+        setBlacklistData(getBlacklistData().filter(item => item.catId !== catId));
+    }
+
+
+
     function getCurrentCategoryId() {
         const qsCat = parseInt(new URLSearchParams(location.search).get('cat') || '', 10);
         if (Number.isFinite(qsCat) && qsCat > 0) return qsCat;
@@ -633,43 +696,13 @@
             const now = Date.now();
             let data = null;
 
-            // 1 hour cache to avoid unnecessary network requests
-            if (cache && (now - cacheTime < 60 * 60 * 1000)) {
+            // Load from cache immediately (even if expired)
+            if (cache) {
                 try {
                     data = JSON.parse(cache);
                 } catch (e) {
                     data = null;
                 }
-            }
-
-            if (!data) {
-                const fetchCatalog = (url) => {
-                    return new Promise((resolve, reject) => {
-                        GM_xmlhttpRequest({
-                            method: 'GET',
-                            url: url,
-                            timeout: 5000,
-                            onload: (res) => {
-                                if (res.status === 200) resolve(res.responseText);
-                                else reject(new Error(`Status ${res.status}`));
-                            },
-                            onerror: reject,
-                            ontimeout: () => reject(new Error('Timeout'))
-                        });
-                    });
-                };
-
-                let responseText;
-                try {
-                    responseText = await fetchCatalog(ENHANCED_JSON_URL);
-                } catch (e) {
-                    console.warn('[Anime1 Enhancer] Failed to load enhanced catalog from GitHub:', e.message);
-                    throw e;
-                }
-
-                data = JSON.parse(responseText);
-                GM_setValue('ae_enhanced_catalog', responseText);
-                GM_setValue('ae_enhanced_catalog_time', now);
             }
 
             if (Array.isArray(data)) {
@@ -679,13 +712,58 @@
                     if (item.catId) enhancedMap.set(item.catId, item);
                 });
                 isEnhancedLoaded = true;
-                console.log('[Anime1 Enhancer] Enhanced catalog loaded successfully. Items:', data.length);
-                return;
+                console.log('[Anime1 Enhancer] Enhanced catalog loaded from cache. Items:', data.length);
+            }
+
+            // Check if we need to fetch/update in background (missing or older than 1 hour)
+            const isExpired = !data || (now - cacheTime > 60 * 60 * 1000);
+            if (isExpired) {
+                revalidateCatalogInBackground();
             }
         } catch (e) {
-            console.warn('[Anime1 Enhancer] Failed to load enhanced catalog, falling back:', e.message);
+            console.warn('[Anime1 Enhancer] Failed to load enhanced catalog from cache:', e.message);
+            isEnhancedLoaded = false;
         }
-        isEnhancedLoaded = false;
+    }
+
+    function revalidateCatalogInBackground() {
+        if (window.__ae_fetching_catalog) return;
+        window.__ae_fetching_catalog = true;
+
+        console.log('[Anime1 Enhancer] Revalidating catalog database in background...');
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: ENHANCED_JSON_URL,
+            timeout: 5000,
+            onload: (res) => {
+                window.__ae_fetching_catalog = false;
+                if (res.status === 200 && res.responseText) {
+                    try {
+                        const parsed = JSON.parse(res.responseText);
+                        if (Array.isArray(parsed)) {
+                            GM_setValue('ae_enhanced_catalog', res.responseText);
+                            GM_setValue('ae_enhanced_catalog_time', Date.now());
+                            console.log('[Anime1 Enhancer] Catalog database updated in background. Items:', parsed.length);
+
+                            // If it wasn't loaded before (i.e. first run, empty cache), load it now
+                            if (!isEnhancedLoaded) {
+                                enhancedCatalog = parsed.map(mapEnhancedItem);
+                                enhancedMap.clear();
+                                enhancedCatalog.forEach(item => {
+                                    if (item.catId) enhancedMap.set(item.catId, item);
+                                });
+                                isEnhancedLoaded = true;
+                                console.log('[Anime1 Enhancer] Enhanced catalog initialized post-background fetch.');
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('[Anime1 Enhancer] Failed to parse background fetched database:', e.message);
+                    }
+                }
+            },
+            onerror: () => { window.__ae_fetching_catalog = false; },
+            ontimeout: () => { window.__ae_fetching_catalog = false; }
+        });
     }
 
 
@@ -742,9 +820,9 @@
         /* Footer reset */
         #colophon { background: transparent !important; border: none !important; padding: 0 !important; }
 
-        /* Common FAB Button */
-        .ae-settings-fab {
-            position: fixed !important; right: 18px !important; z-index: 9999 !important;
+        /* Common Floating Element (FAB & Jump Ball) */
+        .ae-settings-fab, .ae-page-jump-ball {
+            position: fixed !important; z-index: 9999 !important;
             width: 44px !important; height: 44px !important; border-radius: 999px !important;
             color: #f8fafc !important; cursor: pointer !important; text-decoration: none !important;
             background: radial-gradient(circle at 28% 22%, rgba(196,181,253,0.35), rgba(124,58,237,0.42) 46%, rgba(15,23,42,0.84) 100%) !important;
@@ -760,6 +838,8 @@
             border-color: rgba(216,180,254,0.7) !important;
             box-shadow: 0 14px 30px rgba(109,40,217,0.45), inset 0 1px 0 rgba(255,255,255,0.24) !important;
         }
+        .ae-settings-fab { right: 18px !important; }
+        .ae-page-jump-ball { right: 14px !important; top: 50% !important; transform: translateY(-50%) !important; }
         #ae-settings-btn { bottom: 74px !important; }
         #ae-scroll-top-btn-cloned { bottom: 18px !important; }
         #ae-scroll-top-btn-cloned *, #ae-scroll-top-btn-cloned { color: #f8fafc !important; fill: #f8fafc !important; display: inline-flex !important; }
@@ -866,8 +946,8 @@
 
     // ===================== HOMEPAGE =====================
     function isHomePage() {
-        return document.body.classList.contains('home') ||
-            (location.pathname === '/' && document.querySelector('#table-list'));
+        return document.body && (document.body.classList.contains('home') ||
+            (location.pathname === '/' && document.querySelector('#table-list')));
     }
 
     async function enhanceHomePage() {
@@ -1001,6 +1081,7 @@
         // Build UI
         const container = document.getElementById('anime-enhanced-home');
         container.innerHTML = `
+            <div id="ae-sticky-sentinel" style="position: absolute; top: 0; height: 1px; width: 1px; opacity: 0; pointer-events: none;"></div>
             <div class="ae-search-section">
                 <!-- Row 1: Search -->
                 <div class="ae-controls-row">
@@ -1011,6 +1092,12 @@
                         <input type="text" id="ae-search-input" placeholder="搜尋動畫或年份..." autocomplete="off">
                         <div class="ae-search-count"><span id="ae-visible-count">0</span> / ${animeList.length}</div>
                     </div>
+                    <button type="button" id="ae-toggle-filters-btn" class="ae-toggle-filters-btn" title="進階篩選">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+                        </svg>
+                        <span>篩選</span>
+                    </button>
                 </div>
 
                 <!-- Row 2: View Toggle -->
@@ -1018,6 +1105,7 @@
                     <button class="ae-segment-btn active" data-filter="all">📺 番劇列表</button>
                     <button class="ae-segment-btn" data-filter="continue">📅 觀看記錄</button>
                     <button class="ae-segment-btn" data-filter="favorites">⭐ 收藏夾</button>
+                    <button class="ae-segment-btn" data-filter="blacklist">🚫 黑名單</button>
                 </div>
 
                 <!-- Row 3: Filters & Sort -->
@@ -1040,13 +1128,30 @@
                             <option value="completed">🌚 已完結</option>
                         </select>
                     </div>
-                    <div class="ae-filter-group" style="padding-right:4px">
+                    <div class="ae-filter-group">
                         <span class="ae-filter-label">年份：</span>
                         <select id="ae-year-select" class="ae-select ae-filter-select">
                             <option value="">全部年份</option>
                             ${years.map(y => '<option value="' + y + '">' + y + ' 年</option>').join('')}
                         </select>
                     </div>
+                    <div class="ae-filter-group ae-slider-container">
+                        <span class="ae-filter-label">評分：</span>
+                        <div class="ae-dual-slider">
+                            <div class="ae-slider-track" id="ae-score-slider-track"></div>
+                            <input type="range" id="ae-min-score" min="0" max="10" step="0.1" value="0" class="ae-range-input">
+                            <input type="range" id="ae-max-score" min="0" max="10" step="0.1" value="10" class="ae-range-input">
+                        </div>
+                        <span class="ae-slider-value" id="ae-score-range-label">0.0 - 10.0</span>
+                    </div>
+                    <label class="ae-filter-check">
+                        <input type="checkbox" id="ae-include-unrated" checked>
+                        <span class="ae-filter-label">含無評分</span>
+                    </label>
+                    <label class="ae-filter-check">
+                        <input type="checkbox" id="ae-hide-watched">
+                        <span class="ae-filter-label">隱藏已看完</span>
+                    </label>
                 </div>
 
                 <!-- Row 4: Favorites Panel -->
@@ -1074,6 +1179,10 @@
         let currentYear = '';
         let currentSortMode = 'newest';
         let currentFavCategory = '';
+        let currentMinScore = 0.0;
+        let currentMaxScore = 10.0;
+        let includeUnrated = true;
+        let hideWatched = false;
 
         let continueMetaByCat = new Map();
         let renderCursor = 0;
@@ -1147,9 +1256,13 @@
                 const matchesSearch = !query || query.split(/\s+/).every(q => searchStr.includes(q));
 
                 // Dimension 1: Large Scope (View)
-                const matchesView = currentFilter === 'all' ||
-                    (currentFilter === 'continue' && !!progress) ||
-                    (currentFilter === 'favorites' && isAnimeFavorited(a.catId) && (!currentFavCategory || getAnimeFavoriteCategories(a.catId).includes(currentFavCategory)));
+                const matchesView = currentFilter === 'blacklist' ? isAnimeBlacklisted(a.catId) :
+                    currentFilter === 'all' ? !isAnimeBlacklisted(a.catId) :
+                        (currentFilter === 'continue' && !!progress) ||
+                        (currentFilter === 'favorites' && isAnimeFavorited(a.catId) && (!currentFavCategory || getAnimeFavoriteCategories(a.catId).includes(currentFavCategory)));
+
+                // Hide watched filter (only in 'all' view)
+                if (hideWatched && currentFilter === 'all' && progress) return false;
 
                 // Dimension 2: Status Filter (Airing/Completed)
                 const isAiring = a.episodes.includes('連載中');
@@ -1160,7 +1273,15 @@
                 // Dimension 3: Detailed Filters (Year)
                 const matchesYear = !currentYear || a.year === currentYear;
 
-                return matchesSearch && matchesView && matchesStatus && matchesYear;
+                // Dimension 4: Score Filter
+                let matchesScore = true;
+                if (a.score === null || a.score === undefined) {
+                    matchesScore = includeUnrated;
+                } else if (typeof a.score === 'number') {
+                    matchesScore = a.score >= currentMinScore && a.score <= currentMaxScore;
+                }
+
+                return matchesSearch && matchesView && matchesStatus && matchesYear && matchesScore;
             });
 
             // Final Sorting
@@ -1220,7 +1341,25 @@
         function createCard(anime, index) {
             const card = document.createElement('a');
             const cardKey = `${anime.catId}-${index}`;
-            card.href = anime.url;
+
+            // Scheme 2: Set card.href directly to the target episode to avoid redirect latency
+            let targetUrl = anime.url;
+            const progress = continueMetaByCat.get(anime.catId);
+            if (progress && progress.postUrl) {
+                targetUrl = progress.postUrl;
+            } else if (isEnhancedLoaded && anime.catId) {
+                const enhancedAnime = enhancedMap.get(anime.catId);
+                if (enhancedAnime && Array.isArray(enhancedAnime.episodesList) && enhancedAnime.episodesList.length > 0) {
+                    const firstEp = enhancedAnime.episodesList[0];
+                    if (firstEp && firstEp.postId) {
+                        targetUrl = `https://anime1.me/${firstEp.postId}`;
+                    } else if (firstEp && firstEp.url) {
+                        targetUrl = firstEp.url;
+                    }
+                }
+            }
+            card.href = targetUrl;
+
             card.className = 'ae-card';
             card.dataset.index = index;
             card.dataset.cardKey = cardKey;
@@ -1235,7 +1374,6 @@
                 ? (isAiring ? `EP ${epText}` : epText)
                 : (epFallback ? (isAiring ? `EP ${epFallback}` : epFallback) : (isAiring ? 'EP ?' : '?'));
             const episodeMetaClass = isAiring ? 'is-airing' : 'is-complete';
-            const progress = continueMetaByCat.get(anime.catId);
             const progressText = progress?.lastEpisode
                 ? `上次觀看到 EP ${String(progress.lastEpisode).padStart(2, '0')}`
                 : (progress?.lastEpisodeLabel ? `上次觀看到 ${progress.lastEpisodeLabel}` : '');
@@ -1248,6 +1386,10 @@
                     ${progressText ? `<span class="ae-badge ae-badge-progress">${progressText}</span>` : ''}
                     ${(progressText && currentFilter === 'continue') ? '<button type="button" class="ae-progress-delete" title="刪除觀看記錄" aria-label="刪除觀看記錄">×</button>' : ''}
                     ${currentFilter === 'favorites' ? `<button type="button" class="ae-progress-delete ae-fav-delete" title="取消收藏" aria-label="取消收藏" data-cat-id="${anime.catId}">×</button>` : ''}
+                    ${currentFilter === 'blacklist' ? `<button type="button" class="ae-progress-delete ae-blacklist-delete" title="取消黑名單" aria-label="取消黑名單" data-cat-id="${anime.catId}">×</button>` : ''}
+                    
+                    ${currentFilter === 'all' ? `<button type="button" class="ae-card-act-btn ae-card-block-btn" data-cat-id="${anime.catId}" title="加入黑名單" aria-label="加入黑名單"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.7 18.3L18.3 5.7"/></svg></button>` : ''}
+                    ${currentFilter !== 'blacklist' ? `<button type="button" class="ae-card-act-btn ae-card-fav-btn ${isAnimeFavorited(anime.catId) ? 'is-fav' : ''}" data-cat-id="${anime.catId}" title="${isAnimeFavorited(anime.catId) ? '管理收藏' : '加入收藏'}" aria-label="加入收藏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></button>` : ''}
                 </div>
                 <div class="ae-card-info">
                     <h3 class="ae-card-title">${anime.isR18 ? '🔞 ' : ''}${getAnimeName(anime)}</h3>
@@ -1301,11 +1443,63 @@
             }
         }
 
+        // --- Score Slider Control ---
+        const minScoreInput = document.getElementById('ae-min-score');
+        const maxScoreInput = document.getElementById('ae-max-score');
+        const scoreTrack = document.getElementById('ae-score-slider-track');
+        const scoreLabel = document.getElementById('ae-score-range-label');
+
+        function updateScoreSlider() {
+            if (!minScoreInput || !maxScoreInput || !scoreTrack || !scoreLabel) return;
+
+            let minVal = parseFloat(minScoreInput.value);
+            let maxVal = parseFloat(maxScoreInput.value);
+
+            // Constraint
+            if (minVal > maxVal) {
+                if (document.activeElement === minScoreInput) {
+                    minVal = maxVal;
+                    minScoreInput.value = minVal;
+                } else {
+                    maxVal = minVal;
+                    maxScoreInput.value = maxVal;
+                }
+            }
+
+            currentMinScore = minVal;
+            currentMaxScore = maxVal;
+
+            const minPercent = (minVal / 10) * 100;
+            const maxPercent = (maxVal / 10) * 100;
+
+            scoreTrack.style.background = `linear-gradient(to right, rgba(255, 255, 255, 0.1) ${minPercent}%, var(--ae-primary) ${minPercent}%, var(--ae-primary) ${maxPercent}%, rgba(255, 255, 255, 0.1) ${maxPercent}%)`;
+            scoreLabel.textContent = `${minVal.toFixed(1)} - ${maxVal.toFixed(1)}`;
+        }
+
+        // Initialize Slider
+        updateScoreSlider();
+
         // --- Event Binding ---
         document.getElementById('ae-search-input')?.addEventListener('input', debounce(filterAndRender, 300));
         document.getElementById('ae-sort-select')?.addEventListener('change', (e) => { currentSortMode = e.target.value; filterAndRender(); });
         document.getElementById('ae-status-select')?.addEventListener('change', (e) => { currentStatus = e.target.value; filterAndRender(); });
         document.getElementById('ae-year-select')?.addEventListener('change', (e) => { currentYear = e.target.value; filterAndRender(); });
+        document.getElementById('ae-include-unrated')?.addEventListener('change', (e) => { includeUnrated = e.target.checked; filterAndRender(); });
+        document.getElementById('ae-hide-watched')?.addEventListener('change', (e) => { hideWatched = e.target.checked; filterAndRender(); });
+
+        minScoreInput?.addEventListener('input', () => { updateScoreSlider(); filterAndRender(); });
+        maxScoreInput?.addEventListener('input', () => { updateScoreSlider(); filterAndRender(); });
+
+        const handleZIndex = (active, inactive) => {
+            if (active && inactive) {
+                active.style.zIndex = '3';
+                inactive.style.zIndex = '2';
+            }
+        };
+        minScoreInput?.addEventListener('mousedown', () => handleZIndex(minScoreInput, maxScoreInput));
+        minScoreInput?.addEventListener('touchstart', () => handleZIndex(minScoreInput, maxScoreInput));
+        maxScoreInput?.addEventListener('mousedown', () => handleZIndex(maxScoreInput, minScoreInput));
+        maxScoreInput?.addEventListener('touchstart', () => handleZIndex(maxScoreInput, minScoreInput));
 
         document.querySelectorAll('.ae-segment-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -1320,6 +1514,42 @@
         document.getElementById('ae-fav-manage-btn')?.addEventListener('click', () => { openFavManageModal(() => { filterAndRender(); }); });
 
         grid.addEventListener('click', (event) => {
+            const cardFavBtn = event.target.closest('.ae-card-fav-btn');
+            if (cardFavBtn) {
+                event.preventDefault(); event.stopPropagation();
+                const card = cardFavBtn.closest('.ae-card'), index = Number(card.dataset.index), anime = filteredList[index];
+                if (anime) {
+                    openFavoritesModal({ catId: anime.catId, name: anime.name });
+                    const checkClosed = () => { if (!document.getElementById('ae-fav-modal')) filterAndRender(); else requestAnimationFrame(checkClosed); };
+                    requestAnimationFrame(checkClosed);
+                }
+                return;
+            }
+            const cardBlockBtn = event.target.closest('.ae-card-block-btn');
+            if (cardBlockBtn) {
+                event.preventDefault(); event.stopPropagation();
+                const card = cardBlockBtn.closest('.ae-card'), index = Number(card.dataset.index), anime = filteredList[index];
+                if (anime) {
+                    addToBlacklist(anime.catId, anime.name);
+                    card.style.transition = 'opacity 0.3s, transform 0.3s';
+                    card.style.opacity = '0';
+                    card.style.transform = 'scale(0.8)';
+                    setTimeout(() => filterAndRender(), 300);
+                    showToast(`已將「${anime.name}」加入黑名單`);
+                }
+                return;
+            }
+            const blkDelBtn = event.target.closest('.ae-blacklist-delete');
+            if (blkDelBtn) {
+                event.preventDefault(); event.stopPropagation();
+                const card = blkDelBtn.closest('.ae-card'), index = Number(card.dataset.index), anime = filteredList[index];
+                if (anime && confirm(`確定要將「${anime.name}」移出黑名單嗎？`)) {
+                    removeFromBlacklist(anime.catId);
+                    filterAndRender();
+                    showToast(`已將「${anime.name}」移出黑名單`);
+                }
+                return;
+            }
             const favDelBtn = event.target.closest('.ae-fav-delete');
             if (favDelBtn) {
                 event.preventDefault(); event.stopPropagation();
@@ -1408,7 +1638,83 @@
                 grid.ondragend = e => { e.target.closest('.ae-card')?.classList.remove('ae-dragging'); document.querySelectorAll('.ae-fav-cat-tab').forEach(t => t.classList.remove('ae-drag-over')); };
             }
         }
+        document.querySelectorAll('.ae-search-section .ae-select').forEach(upgradeSelectToCustom);
+
+        // Setup Sticky Header observer and filter toggle
+        function initStickyHeader() {
+            const searchSection = document.querySelector('.ae-search-section');
+            const stickySentinel = document.getElementById('ae-sticky-sentinel');
+            const toggleBtn = document.getElementById('ae-toggle-filters-btn');
+
+            if (toggleBtn && searchSection) {
+                toggleBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    searchSection.classList.toggle('ae-filters-expanded');
+                });
+            }
+
+            if (stickySentinel && searchSection) {
+                const stickyObserver = new IntersectionObserver((entries) => {
+                    entries.forEach(entry => {
+                        if (!entry.isIntersecting) {
+                            searchSection.classList.add('ae-compact');
+                        } else {
+                            searchSection.classList.remove('ae-compact');
+                            searchSection.classList.remove('ae-filters-expanded');
+                        }
+                    });
+                }, { root: null, threshold: 0 });
+                stickyObserver.observe(stickySentinel);
+            }
+        }
+        initStickyHeader();
+
         filterAndRender();
+    }
+
+    function upgradeSelectToCustom(selectEl) {
+        if (!selectEl || selectEl.dataset.upgraded) return;
+        selectEl.dataset.upgraded = '1';
+        selectEl.style.display = 'none';
+        const wrapper = document.createElement('div');
+        wrapper.className = 'ae-cs-wrap';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ae-cs-btn';
+        const panel = document.createElement('div');
+        panel.className = 'ae-cs-panel';
+        const chevron = `<svg class="ae-cs-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+        const sync = () => {
+            const opt = selectEl.options[selectEl.selectedIndex];
+            btn.innerHTML = `<span class="ae-cs-text">${opt ? opt.textContent : ''}</span>${chevron}`;
+        };
+        const build = () => {
+            panel.innerHTML = '';
+            [...selectEl.options].forEach((opt, i) => {
+                const item = document.createElement('div');
+                item.className = 'ae-cs-item' + (i === selectEl.selectedIndex ? ' active' : '');
+                item.textContent = opt.textContent;
+                item.addEventListener('click', e => {
+                    e.stopPropagation();
+                    selectEl.selectedIndex = i;
+                    selectEl.dispatchEvent(new Event('change'));
+                    sync();
+                    panel.classList.remove('open');
+                });
+                panel.appendChild(item);
+            });
+        };
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            document.querySelectorAll('.ae-cs-panel.open').forEach(p => p.classList.remove('open'));
+            build();
+            panel.classList.toggle('open');
+        });
+        document.addEventListener('click', () => panel.classList.remove('open'));
+        wrapper.appendChild(btn);
+        wrapper.appendChild(panel);
+        selectEl.parentNode.insertBefore(wrapper, selectEl);
+        sync();
     }
 
     function fetchAnimeList() {
@@ -1438,6 +1744,18 @@
             playBtn.classList.toggle('is-favorited', isFav);
             const textEl = playBtn.querySelector('.ap-fav-text');
             if (textEl) textEl.textContent = isFav ? '取消收藏' : '加入收藏';
+        }
+    }
+
+    function updateBlacklistUI(catId) {
+        if (!catId) return;
+        const blBtn = document.getElementById('ap-blacklist-btn');
+        if (blBtn && parseInt(blBtn.dataset.catId, 10) === catId) {
+            const isBlack = isAnimeBlacklisted(catId);
+            blBtn.classList.toggle('is-blacklisted', isBlack);
+            blBtn.title = isBlack ? '取消黑名單' : '加入黑名單';
+            const textEl = blBtn.querySelector('.ap-blacklist-text');
+            if (textEl) textEl.textContent = isBlack ? '取消黑名單' : '加入黑名單';
         }
     }
 
@@ -1534,18 +1852,13 @@
     }
 
     const HOMEPAGE_CSS = `
+        /* Ensure parents allow sticky position to work */
+        html, body, #page, #content, .site-content, #primary, #main {
+            overflow: visible !important;
+        }
+
         #masthead, .entry-header { display: none !important; }
 
-        /* Jump Ball */
-        .ae-page-jump-ball {
-            position: fixed; right: 14px; top: 50%; transform: translateY(-50%); z-index: 9999;
-            width: 44px; height: 44px; border-radius: 50%;
-            background: radial-gradient(circle at 28% 22%, rgba(196,181,253,0.35), rgba(124,58,237,0.42) 46%, rgba(15,23,42,0.84) 100%);
-            border: 1px solid rgba(196,181,253,0.42);
-            box-shadow: 0 10px 24px rgba(76,29,149,0.36), inset 0 1px 0 rgba(255,255,255,0.16);
-            backdrop-filter: blur(10px) saturate(1.1); transition: 0.2s;
-            display: flex; align-items: center; justify-content: center;
-        }
         .ae-page-jump-input {
             width: 100% !important; height: 100% !important; border: none !important; background: transparent !important;
             color: #fff !important; text-align: center !important; font-size: 14px !important; font-weight: 700 !important;
@@ -1558,7 +1871,61 @@
         @keyframes ae-spin { to { transform: rotate(360deg); } }
 
         /* New Controls Layered Layout */
-        .ae-search-section { margin-bottom: 24px; display: flex; flex-direction: column; gap: 14px; position: sticky; top: 0; z-index: 10; background: var(--ae-bg-base); padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .ae-search-section {
+            margin-bottom: 24px; display: flex; flex-direction: column; gap: 14px; position: sticky; top: 0; z-index: 100;
+            background: var(--ae-bg-base); padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05);
+            transition: padding 0.25s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.25s ease, box-shadow 0.25s ease, gap 0.25s ease;
+        }
+
+        .ae-search-section.ae-compact {
+            padding: 8px 12px;
+            background: rgba(11, 11, 22, 0.9);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+            border-bottom-color: rgba(139, 92, 246, 0.2);
+            gap: 10px;
+        }
+
+        /* Toggle Filter Button */
+        .ae-toggle-filters-btn {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            background: var(--ae-bg-surface);
+            border: 1px solid var(--ae-border-primary);
+            border-radius: 12px;
+            padding: 8px 14px;
+            color: var(--ae-text-secondary);
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            height: 42px;
+        }
+        .ae-toggle-filters-btn:hover {
+            border-color: var(--ae-primary);
+            background: var(--ae-bg-hover);
+            color: #fff;
+        }
+        .ae-toggle-filters-btn svg {
+            width: 15px;
+            height: 15px;
+        }
+        .ae-search-section.ae-compact .ae-toggle-filters-btn {
+            display: inline-flex;
+        }
+        .ae-search-section.ae-compact.ae-filters-expanded .ae-toggle-filters-btn {
+            background: rgba(139, 92, 246, 0.2);
+            border-color: var(--ae-primary);
+            color: #fff;
+        }
+
+        /* Hide other rows when compact unless expanded */
+        .ae-search-section.ae-compact:not(.ae-filters-expanded) .ae-view-row,
+        .ae-search-section.ae-compact:not(.ae-filters-expanded) .ae-filter-row,
+        .ae-search-section.ae-compact:not(.ae-filters-expanded) .ae-fav-panel {
+            display: none !important;
+        }
         
         /* Row 1: Search & Sort */
         .ae-controls-row { display: flex; gap: 12px; align-items: center; }
@@ -1579,8 +1946,35 @@
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' class='feather feather-chevron-down' viewBox='0 0 24 24'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
             background-repeat: no-repeat; background-position: right 10px center; background-size: 14px;
         }
-        .ae-select option { background: #1e293b; color: #fff; }
+        .ae-select option { background: #141428 !important; color: #e2e8f0 !important; padding: 6px 12px; }
+        .ae-select option:checked { background: rgba(var(--ae-primary-rgb),0.3) !important; color: #fff !important; }
+        .ae-select option:hover { background: rgba(var(--ae-primary-rgb),0.2) !important; }
         .ae-select:hover { border-color: var(--ae-primary); background: var(--ae-bg-hover); }
+
+        /* Custom Select Dropdown */
+        .ae-cs-wrap { position: relative; display: inline-block; }
+        .ae-cs-btn {
+            appearance: none; background: var(--ae-bg-surface); border: 1px solid var(--ae-border-primary);
+            border-radius: 8px; padding: 6px 26px 6px 10px; color: var(--ae-text-secondary);
+            font-size: 12px; cursor: pointer; font-family: inherit; white-space: nowrap;
+            display: inline-flex; align-items: center; gap: 6px; transition: 0.2s; backdrop-filter: blur(12px);
+        }
+        .ae-cs-btn:hover { border-color: var(--ae-primary); background: var(--ae-bg-hover); }
+        .ae-cs-chevron { flex-shrink: 0; opacity: 0.6; transition: transform 0.2s; }
+        .ae-cs-panel.open ~ .ae-cs-btn .ae-cs-chevron, .ae-cs-wrap:has(.ae-cs-panel.open) .ae-cs-chevron { transform: rotate(180deg); }
+        .ae-cs-panel {
+            display: none; position: absolute; top: calc(100% + 4px); left: 0; min-width: calc(100% + 20px);
+            background: #141428; border: 1px solid var(--ae-border-primary); border-radius: 10px;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.6); z-index: 200; overflow: hidden;
+            max-height: 260px; overflow-y: auto; backdrop-filter: blur(16px);
+        }
+        .ae-cs-panel.open { display: block; }
+        .ae-cs-item {
+            padding: 8px 14px; color: var(--ae-text-secondary); font-size: 13px; cursor: pointer;
+            transition: background 0.15s, color 0.15s; white-space: nowrap;
+        }
+        .ae-cs-item:hover { background: rgba(var(--ae-primary-rgb),0.15); color: #fff; }
+        .ae-cs-item.active { background: rgba(var(--ae-primary-rgb),0.25); color: #fff; font-weight: 600; }
 
         /* Row 2: View Segment */
         .ae-view-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -1592,12 +1986,42 @@
         .ae-segment-btn.active { background: var(--ae-primary-grad); color: #fff; border-color: transparent; box-shadow: 0 4px 12px rgba(var(--ae-primary-rgb), 0.3); }
         .ae-segment-btn[data-filter="continue"].active { background: linear-gradient(135deg, #059669, #10b981); }
         .ae-segment-btn[data-filter="favorites"].active { background: var(--ae-gold-grad); }
+        .ae-segment-btn[data-filter="blacklist"].active { background: linear-gradient(135deg, #dc2626, #ef4444); }
 
         /* Row 3: Advanced Filters */
         .ae-filter-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 14px; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); }
         .ae-filter-group { display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap; }
         .ae-filter-label { font-size: 12px; color: var(--ae-text-muted); font-weight: 500; flex-shrink: 0; }
         .ae-filter-select { min-width: 90px; padding: 6px 24px 6px 10px; border-radius: 8px; width: auto; font-size: 12px; }
+        .ae-filter-check { display: flex; align-items: center; gap: 4px; cursor: pointer; flex-shrink: 0; }
+        .ae-filter-check input[type="checkbox"] { accent-color: var(--ae-primary); width: 14px; height: 14px; cursor: pointer; }
+
+        /* Score Dual Slider */
+        .ae-slider-container { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        .ae-dual-slider { position: relative; width: 120px; height: 20px; display: flex; align-items: center; }
+        .ae-slider-track { position: absolute; height: 4px; left: 9px; width: calc(100% - 18px); background: rgba(255, 255, 255, 0.1); border-radius: 2px; z-index: 1; }
+        .ae-range-input { position: absolute; width: 100%; height: 20px; background: transparent !important; pointer-events: none; -webkit-appearance: none; appearance: none; margin: 0 !important; padding: 0 !important; z-index: 2; outline: none !important; border: none !important; box-shadow: none !important; box-sizing: border-box !important; }
+        .ae-range-input::-webkit-slider-runnable-track { background: transparent !important; border: none !important; box-shadow: none !important; }
+        .ae-range-input::-moz-range-track { background: transparent !important; border: none !important; box-shadow: none !important; }
+        .ae-range-input::-webkit-slider-thumb { height: 14px !important; width: 14px !important; border-radius: 50% !important; background: var(--ae-primary) !important; cursor: pointer; pointer-events: auto; -webkit-appearance: none; appearance: none; border: none !important; box-shadow: 0 0 4px rgba(0, 0, 0, 0.5) !important; transition: 0.15s; box-sizing: border-box !important; }
+        .ae-range-input::-webkit-slider-thumb:hover { transform: scale(1.25); box-shadow: 0 0 8px rgba(var(--ae-primary-rgb), 0.6) !important; }
+        .ae-range-input::-moz-range-thumb { height: 14px !important; width: 14px !important; border-radius: 50% !important; background: var(--ae-primary) !important; cursor: pointer; pointer-events: auto; border: none !important; box-shadow: 0 0 4px rgba(0, 0, 0, 0.5) !important; transition: 0.15s; box-sizing: border-box !important; }
+        .ae-range-input::-moz-range-thumb:hover { transform: scale(1.25); box-shadow: 0 0 8px rgba(var(--ae-primary-rgb), 0.6) !important; }
+        .ae-slider-value { font-size: 12px; color: var(--ae-text-secondary); font-weight: 500; min-width: 65px; text-align: center; background: rgba(255, 255, 255, 0.05); padding: 3px 6px; border-radius: 6px; }
+
+        /* Direct Card Actions Overlay */
+        .ae-card-act-btn { position: absolute; width: 30px; height: 30px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.2); background: rgba(15,23,42,0.65); backdrop-filter: blur(8px); color: rgba(255,255,255,0.75); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s; padding: 0; z-index: 3; opacity: 0; pointer-events: none; }
+        .ae-card:hover .ae-card-act-btn { opacity: 1; pointer-events: auto; }
+        .ae-card-act-btn svg { width: 14px; height: 14px; fill: none !important; stroke: currentColor !important; stroke-width: 2 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+        .ae-card-act-btn:hover { transform: scale(1.15); }
+        .ae-card-fav-btn { bottom: 8px; right: 8px; }
+        .ae-card-fav-btn:hover, .ae-card-fav-btn.is-fav { color: var(--ae-gold); border-color: rgba(var(--ae-gold-rgb),0.5); background: rgba(var(--ae-gold-rgb),0.25); }
+        .ae-card-fav-btn.is-fav { opacity: 1; pointer-events: auto; }
+        .ae-card-fav-btn.is-fav svg { fill: currentColor; stroke: currentColor; }
+        .ae-card-block-btn { top: 8px; right: 8px; }
+        .ae-card-block-btn:hover { color: #ef4444; border-color: rgba(239,68,68,0.5); background: rgba(239,68,68,0.25); }
+        .ae-card-unblock-btn { top: 8px; right: 8px; }
+        .ae-card-unblock-btn:hover { color: #10b981; border-color: rgba(16,185,129,0.5); background: rgba(16,185,129,0.25); }
         
         .ae-season-pills { display: flex; gap: 4px; }
         .ae-pill-mini {
@@ -1673,14 +2097,14 @@
 
     // Detect category archive page (the old "play page")
     function isCategoryPlayPage() {
-        return document.body.classList.contains('archive') &&
+        return document.body && document.body.classList.contains('archive') &&
             document.body.classList.contains('category') &&
             document.querySelectorAll('article').length > 0;
     }
 
     // Detect single post page (独立播放页, e.g. https://anime1.me/28432)
     function isSinglePostPage() {
-        return document.body.classList.contains('single') &&
+        return document.body && document.body.classList.contains('single') &&
             document.body.classList.contains('single-post') &&
             !!document.querySelector('#main > article .vjscontainer');
     }
@@ -1796,7 +2220,23 @@
             }
         }
 
-        // No stored progress — need to find episode 1.
+        // Scheme 1: Use database cache for fast redirection if available
+        if (isEnhancedLoaded && catId) {
+            const enhancedAnime = enhancedMap.get(catId);
+            if (enhancedAnime && Array.isArray(enhancedAnime.episodesList) && enhancedAnime.episodesList.length > 0) {
+                const firstEp = enhancedAnime.episodesList[0];
+                const postId = firstEp.postId || extractPostIdFromUrl(firstEp.url);
+                if (postId) {
+                    location.replace(`https://anime1.me/${postId}`);
+                    return;
+                } else if (firstEp.url) {
+                    location.replace(firstEp.url);
+                    return;
+                }
+            }
+        }
+
+        // No stored progress and no cache — need to find episode 1.
         // Show a loading overlay while we fetch all episode pages.
         const overlay = document.createElement('div');
         overlay.id = 'ap-category-loading-overlay';
@@ -1963,6 +2403,10 @@
                                         <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
                                         <span class="ap-fav-text">${playCatId && isAnimeFavorited(playCatId) ? '取消收藏' : '加入收藏'}</span>
                                     </button>
+                                    <button type="button" class="ap-blacklist-btn ${playCatId && isAnimeBlacklisted(playCatId) ? 'is-blacklisted' : ''}" id="ap-blacklist-btn" data-cat-id="${playCatId}" title="${playCatId && isAnimeBlacklisted(playCatId) ? '取消黑名單' : '加入黑名單'}">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.7 18.3L18.3 5.7"/></svg>
+                                        <span class="ap-blacklist-text">${playCatId && isAnimeBlacklisted(playCatId) ? '取消黑名單' : '加入黑名單'}</span>
+                                    </button>
                                 </div>
                                 <span class="ap-ep-count" id="ap-ep-count">載入中...</span>
                             </div>
@@ -1989,6 +2433,25 @@
                     }
                 } else {
                     openFavoritesModal({ catId: playCatId, name: animeName });
+                }
+            });
+        }
+
+        const blBtn = document.getElementById('ap-blacklist-btn');
+        if (blBtn && playCatId) {
+            blBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (isAnimeBlacklisted(playCatId)) {
+                    if (confirm(`確定要將「${animeName}」移出黑名單嗎？`)) {
+                        removeFromBlacklist(playCatId);
+                        updateBlacklistUI(playCatId);
+                    }
+                } else {
+                    if (confirm(`確定要將「${animeName}」加入黑名單嗎？加入後該動漫將不會在首頁顯示。`)) {
+                        addToBlacklist(playCatId, animeName);
+                        updateBlacklistUI(playCatId);
+                    }
                 }
             });
         }
@@ -2399,8 +2862,6 @@
         .page-header { display: none !important; }
 
         /* Play Page Layout Resets */
-        body.archive.category, body.archive.category #page, body.archive.category #content, body.archive.category .site-content, body.archive.category #primary, body.archive.category #main, body.archive.category #colophon { background: var(--ae-bg-base) !important; }
-        body.archive.category #colophon .scroll-top { display: none !important; }
         /* Dynamic Max-Width based on viewport height to balance vertical visibility */
         #primary { max-width: 1100px !important; }
         .site-content { max-width: 1200px !important; }
@@ -2444,6 +2905,12 @@
         .ap-fav-btn.is-favorited:hover { background: rgba(var(--ae-gold-rgb),0.25); border-color: rgba(var(--ae-gold-rgb),0.5); }
         .ap-fav-btn svg { fill: none; stroke: currentColor; stroke-width: 1.8; transition: all 0.25s ease; width: 14px; height: 14px; }
         .ap-fav-btn.is-favorited svg { fill: currentColor; stroke: currentColor; }
+
+        .ap-blacklist-btn { position: static; height: 32px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 999px; background: var(--ae-bg-input); border: 1px solid var(--ae-border-light); color: var(--ae-text-primary); cursor: pointer; font-size: 13px; font-family: inherit; transition: all 0.25s ease; }
+        .ap-blacklist-btn:hover { background: var(--ae-bg-hover); border-color: rgba(var(--ae-danger-rgb),0.55); color: rgb(var(--ae-danger-rgb)); }
+        .ap-blacklist-btn.is-blacklisted { color: rgb(var(--ae-danger-rgb)); background: rgba(var(--ae-danger-rgb),0.15); border-color: rgba(var(--ae-danger-rgb),0.35); }
+        .ap-blacklist-btn.is-blacklisted:hover { background: rgba(var(--ae-danger-rgb),0.25); border-color: rgba(var(--ae-danger-rgb),0.5); }
+        .ap-blacklist-btn svg { fill: none; stroke: currentColor; stroke-width: 1.8; transition: all 0.25s ease; width: 14px; height: 14px; }
 
         /* Video Wrapper */
         .ap-video-wrapper { background: #000; position: relative !important; overflow: hidden !important; width: 100% !important; border-radius: 0 !important; }
@@ -2654,15 +3121,21 @@
         setTimeout(mountSettingsFloatingButton, 120);
         initForcedDarkMode();
 
+        // Load database (reads cache synchronously and triggers revalidation in background)
         await loadCatalogData();
 
-        if (isHomePage()) {
-            enhanceHomePage();
-        } else if (isPlayPage()) {
-            enhancePlayPage();
-        } else {
-            // Not a supported page, remove hide
+        const isHome = isHomePage();
+        const isPlay = isPlayPage();
+
+        if (!isHome && !isPlay) {
+            // Not a supported page, remove hide immediately
             document.getElementById('ae-initial-hide')?.remove();
+        } else {
+            if (isHome) {
+                enhanceHomePage();
+            } else if (isPlay) {
+                enhancePlayPage();
+            }
         }
 
         // Show settings dialog on first run
