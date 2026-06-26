@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime1.me 增強2026
-// @version      3.10.0
-// @description  UI重構+封麵顯示+收藏夾+首頁無限滾動+觀看記錄+播放記憶+獨立播放頁跳轉+選集整合+播放器快捷鍵
+// @version      4.0.4
+// @description  封面+簡中繁中名搜索+收藏夾+觀看記錄+選集+快捷鍵+播放記憶
 // @author       Ryan
 // @match        https://anime1.me/*
 // @grant        GM_xmlhttpRequest
@@ -10,10 +10,9 @@
 // @grant        GM_deleteValue
 // @grant        GM_listValues
 // @connect      *.bgm.tv
-// @connect      api.bgm.tv
-// @connect      api.themoviedb.org
 // @connect      image.tmdb.org
 // @connect      anime1.me
+// @connect      raw.githubusercontent.com
 // @run-at       document-start
 // @icon         https://anime1.me/favicon-32x32.png
 // @license      MIT
@@ -34,17 +33,10 @@
     }
 
     // ===================== CONFIG =====================
-    const CACHE_EXPIRY = 7 * 24 * 60 * 60 * 1000; // 7 days
-    const BGM_API_URL = 'https://api.bgm.tv/v0';
-    const TMDB_API_URL = 'https://api.themoviedb.org/3';
-    const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
-    const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w1280';
-    const TMDB_API_KEY = '8baba8ab6b8bbe247645bcae7df63d0d';
-    const BGM_CACHE_PREFIX = 'bgm_v1_';
     const BGM_USER_AGENT = 'Anime1Enhancer/3.0.1 (https://anime1.me/)';
-    const API_RATE_INTERVAL = 300; // ms between requests
     const WATCH_PROGRESS_STORAGE_KEY = 'ae_watch_progress_v1';
     const FAVORITES_STORAGE_KEY = 'ae_favorites_v1';
+    const ENHANCED_JSON_URL = 'https://raw.githubusercontent.com/zjjscwt/anime1-enhanced/main/animelist-enhanced.json';
 
     // ===================== CORE HELPERS =====================
 
@@ -90,6 +82,7 @@
         const existing = document.getElementById('ae-general-modal');
         if (existing) return;
 
+        const initialLang = getDisplayLanguage();
         const overlay = document.createElement('div');
         overlay.id = 'ae-general-modal';
         overlay.className = 'ae-modal-overlay';
@@ -97,25 +90,47 @@
             <div class="ae-modal-panel" role="dialog" aria-modal="true" aria-labelledby="ae-modal-title">
                 <button type="button" class="ae-modal-close" aria-label="關閉">×</button>
                 <h2 class="ae-modal-title" id="ae-modal-title">Anime1 增強設定</h2>
+                <div class="ae-modal-field" style="margin-bottom:16px;">
+                    <label style="display:block; font-size:14px; font-weight:600; margin-bottom:8px; color:#ddd6fe;">動漫名稱及封面顯示語言：</label>
+                    <div class="ae-radio-group">
+                        <label class="ae-radio-label ${initialLang === 'zh-hant' ? 'is-selected' : ''}">
+                            <input type="radio" name="ae-lang" value="zh-hant" ${initialLang === 'zh-hant' ? 'checked' : ''} class="ae-radio-input">
+                            <span>繁體中文</span>
+                        </label>
+                        <label class="ae-radio-label ${initialLang === 'zh-hans' ? 'is-selected' : ''}">
+                            <input type="radio" name="ae-lang" value="zh-hans" ${initialLang === 'zh-hans' ? 'checked' : ''} class="ae-radio-input">
+                            <span>简体中文</span>
+                        </label>
+                    </div>
+                    <p style="font-size:13px; color:var(--ae-text-secondary); line-height:1.6; margin-bottom:12px;">封面來源：TMDB；評分來源：Bangumi (BGM.tv)。</p>
+                    <p style="font-size:13px; color:var(--ae-text-secondary); line-height:1.6; margin-bottom:12px;">注：在简体中文模式下，部分封面没有简体版，仍会回退为繁体封面</p>
+                </div>
+                <div class="ae-modal-field" style="margin-bottom:16px;">
+                    <label style="display:block; font-size:14px; font-weight:600; margin-bottom:8px; color:#ddd6fe;">收藏夾備份與還原：</label>
+                    <div class="ae-flex-row" style="gap:10px;">
+                        <button type="button" id="ae-export-fav" class="ae-modal-btn" style="flex:1;">匯出收藏夾</button>
+                        <button type="button" id="ae-import-fav" class="ae-modal-btn" style="flex:1;">匯入收藏夾</button>
+                        <input type="file" id="ae-import-fav-file" accept=".json" style="display:none;">
+                    </div>
+                </div>
                 <div class="ae-modal-field">
-                    <p style="font-size:13px; color:var(--ae-text-secondary); line-height:1.6; margin-bottom:12px;">封面來源：TMDB（內建 API Key）；評分來源：Bangumi (BGM.tv)。</p>
                     <div class="ae-modal-shortcuts">
                         <h3>播放器快捷鍵說明：</h3>
                         <ul>
-                            <li><b>W</b>：切換/退出 網頁全屏</li>
-                            <li><b>S 鍵</b>：輪流切換播放倍速</li>
-                            <li><b>S + ↑ / ↓</b>：微調倍速 (+/- 0.1x)</li>
+                            <li><b>W</b>：網頁全屏</li>
                             <li><b>Space</b>：播放 / 暫停</li>
-                            <li><b>F</b>：進入 / 退出 系統全屏</li>
-                            <li><b>M</b>：靜音 / 取消靜音</li>
-                            <li><b>← / →</b>：快退 / 快進 5 秒</li>
-                            <li><b>↑ / ↓</b>：增加 / 減少 音量</li>
+                            <li><b>S 鍵</b>：切換倍速</li>
+                            <li><b>F</b>：系統全屏</li>
+                            <li><b>S+↑/↓</b>：微調倍速</li>
+                            <li><b>M</b>：切換靜音</li>
+                            <li><b>← / →</b>：快退 / 快進</li>
+                            <li><b>↑ / ↓</b>：調整音量</li>
                         </ul>
                     </div>
                 </div>
                 <div id="ae-modal-status" class="ae-modal-status"></div>
                 <div class="ae-modal-actions">
-                    <button type="button" id="ae-clear-bgm-cache" class="ae-modal-btn ae-modal-btn-danger">清除封面及評分緩存</button>
+                    <button type="button" id="ae-clear-bgm-cache" class="ae-modal-btn ae-modal-btn-danger">清除緩存</button>
                     <span class="ae-modal-actions-spacer"></span>
                     <button type="button" id="ae-close-settings" class="ae-modal-btn ae-modal-btn-primary">確定</button>
                 </div>
@@ -124,9 +139,32 @@
 
         document.body.appendChild(overlay);
 
+        let currentLang = initialLang;
+        const radioLabels = overlay.querySelectorAll('.ae-radio-label');
+        const radios = overlay.querySelectorAll('input[name="ae-lang"]');
+        radios.forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                currentLang = e.target.value;
+                setDisplayLanguage(currentLang);
+
+                // Update selection classes on parent labels
+                radioLabels.forEach(label => {
+                    const input = label.querySelector('input');
+                    if (input.checked) {
+                        label.classList.add('is-selected');
+                    } else {
+                        label.classList.remove('is-selected');
+                    }
+                });
+            });
+        });
+
         const close = () => {
             document.removeEventListener('keydown', onKeydown);
             overlay.remove();
+            if (currentLang !== initialLang) {
+                location.reload();
+            }
         };
         const onKeydown = (e) => { if (e.key === 'Escape') close(); };
         document.addEventListener('keydown', onKeydown);
@@ -136,22 +174,83 @@
         overlay.querySelector('#ae-close-settings').addEventListener('click', close);
 
         overlay.querySelector('#ae-clear-bgm-cache').addEventListener('click', () => {
-            if (confirm('確定要清除所有已緩存的封面與評分數據嗎？')) {
+            if (confirm('確定要清除所有已緩存的動畫增強數據嗎？')) {
                 try {
-                    const keys = GM_listValues();
-                    let count = 0;
-                    keys.forEach(k => {
-                        if (k.startsWith(BGM_CACHE_PREFIX)) {
-                            GM_deleteValue(k);
-                            count++;
-                        }
-                    });
-                    alert(`成功清除 ${count} 項封面，頁面即將重新整理。`);
+                    GM_deleteValue('ae_enhanced_catalog');
+                    GM_deleteValue('ae_enhanced_catalog_time');
+                    alert('成功清除動畫增強數據緩存，頁面即將重新整理。');
                     location.reload();
                 } catch (e) {
-                    alert('清除失敗，請檢查權限或手动清理油猴數據：' + e.message);
+                    alert('清除失敗：' + e.message);
                 }
             }
+        });
+
+        // 匯出與匯入收藏夾
+        overlay.querySelector('#ae-export-fav').addEventListener('click', () => {
+            try {
+                const favData = getFavoritesData();
+                const backup = {
+                    type: 'anime1_enhanced_backup',
+                    version: '1.0',
+                    exportedAt: new Date().toISOString(),
+                    data: favData
+                };
+                const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `anime1_favorites_${new Date().toISOString().slice(0, 10)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('匯出失敗：' + e.message);
+            }
+        });
+
+        const fileInput = overlay.querySelector('#ae-import-fav-file');
+        overlay.querySelector('#ae-import-fav').addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                try {
+                    const backup = JSON.parse(event.target.result);
+                    if (backup.type !== 'anime1_enhanced_backup') {
+                        throw new Error('無效的備份檔案格式。');
+                    }
+                    const data = backup.data;
+                    if (!data || !Array.isArray(data.categories) || typeof data.items !== 'object') {
+                        throw new Error('備份檔案數據損壞。');
+                    }
+
+                    // Validate and fix default category if missing
+                    if (!data.categories.find(c => c.id === 'default')) {
+                        data.categories.unshift({ id: 'default', name: '默認分類', isDefault: true });
+                    }
+
+                    if (confirm('匯入備份將會覆蓋您目前的收藏夾數據，確定要繼續嗎？')) {
+                        setFavoritesData(data);
+                        alert('收藏夾匯入成功，頁面即將重新整理。');
+                        location.reload();
+                    }
+                } catch (err) {
+                    alert('匯入失敗：' + err.message);
+                }
+                fileInput.value = '';
+            };
+            reader.onerror = () => {
+                alert('讀取檔案失敗。');
+                fileInput.value = '';
+            };
+            reader.readAsText(file);
         });
     }
 
@@ -306,6 +405,32 @@
         try {
             GM_setValue(getCacheKey(name), JSON.stringify({ timestamp: Date.now(), value }));
         } catch { /* quota exceeded, ignore */ }
+    }
+
+    function getDisplayLanguage() {
+        return GM_getValue('ae_display_lang', 'zh-hans');
+    }
+
+    function setDisplayLanguage(lang) {
+        GM_setValue('ae_display_lang', lang);
+    }
+
+    function getAnimeName(anime) {
+        if (!anime) return '';
+        const lang = getDisplayLanguage();
+        if (lang === 'zh-hans') {
+            return anime.nameZhHans || anime.name;
+        }
+        return anime.name;
+    }
+
+    function getAnimeCover(anime) {
+        if (!anime) return null;
+        const lang = getDisplayLanguage();
+        if (lang === 'zh-hans') {
+            return anime["cn-coverURL"] || anime.coverUrl;
+        }
+        return anime.coverUrl;
     }
 
     function normalizeAnimeName(name) {
@@ -471,451 +596,99 @@
         return (Number.isFinite(classCat) && classCat > 0) ? classCat : null;
     }
 
-    // Bangumi request queue
-    let apiQueue = [];
-    let apiProcessing = false;
-    let tmdbQueue = [];
-    let tmdbProcessing = false;
+    // Enhanced Database variables
+    let enhancedCatalog = null;
+    const enhancedMap = new Map();
+    let isEnhancedLoaded = false;
 
-    function clearApiQueue() {
-        // Resolve all pending tasks with null to avoid hanging promises
-        apiQueue.forEach(item => item.resolve(null));
-        apiQueue = [];
-        tmdbQueue.forEach(item => item.resolve(null));
-        tmdbQueue = [];
+    function mapEnhancedItem(item) {
+        if (!item) return null;
+        if (item.catId) return item; // Already full-length format
+
+        return {
+            catId: item.id,
+            name: item.n,
+            nameZhHans: item.z || item.n,
+            episodes: item.t || '',
+            year: item.y || '',
+            sub: '',
+            score: (item.s !== undefined && item.s !== null) ? item.s : null,
+            coverUrl: item.c ? (item.c.startsWith('/') ? 'https://image.tmdb.org/t/p/w500' + item.c : item.c) : null,
+            "cn-coverURL": item.f ? (item.f.startsWith('/') ? 'https://image.tmdb.org/t/p/w500' + item.f : item.f) : null,
+            backdropUrl: item.b ? (item.b.startsWith('/') ? 'https://image.tmdb.org/t/p/w1280' + item.b : item.b) : null,
+            episodesList: typeof item.l === 'string' ? (item.l ? item.l.split(',').map(s => {
+                const [p, e] = s.split(':');
+                return {
+                    postId: p,
+                    epNum: e !== '' ? Number(e) : null
+                };
+            }) : []) : []
+        };
     }
 
-    function processApiQueue() {
-        if (apiProcessing || apiQueue.length === 0) return;
-        apiProcessing = true;
-        const item = apiQueue.shift();
-        if (!item) { apiProcessing = false; return; }
-        const { method, url, body, resolve } = item;
+    async function loadCatalogData() {
+        try {
+            const cache = GM_getValue('ae_enhanced_catalog', null);
+            const cacheTime = GM_getValue('ae_enhanced_catalog_time', 0);
+            const now = Date.now();
+            let data = null;
 
-        GM_xmlhttpRequest({
-            method: method || 'GET',
-            url: url,
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-                'User-Agent': BGM_USER_AGENT
-            },
-            data: body ? JSON.stringify(body) : null,
-            onload(res) {
+            // 1 hour cache to avoid unnecessary network requests
+            if (cache && (now - cacheTime < 60 * 60 * 1000)) {
                 try {
-                    const data = JSON.parse(res.responseText);
-                    resolve(data);
-                } catch { resolve(null); }
-                setTimeout(() => { apiProcessing = false; processApiQueue(); }, API_RATE_INTERVAL);
-            },
-            onerror() {
-                resolve(null);
-                setTimeout(() => { apiProcessing = false; processApiQueue(); }, API_RATE_INTERVAL);
-            }
-        });
-    }
-
-    function bgmRequest(endpoint, body = null) {
-        return new Promise(resolve => {
-            const url = `${BGM_API_URL}${endpoint}`;
-            apiQueue.push({ method: 'POST', url, body, resolve });
-            processApiQueue();
-        });
-    }
-
-    function processTmdbQueue() {
-        if (tmdbProcessing || tmdbQueue.length === 0) return;
-        tmdbProcessing = true;
-        const item = tmdbQueue.shift();
-        if (!item) { tmdbProcessing = false; return; }
-        const { url, resolve } = item;
-
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url,
-            headers: {
-                'Accept': 'application/json',
-                'User-Agent': BGM_USER_AGENT
-            },
-            onload(res) {
-                if (res.status >= 200 && res.status < 300) {
-                    try { resolve(JSON.parse(res.responseText)); } catch { resolve(null); }
-                } else {
-                    resolve(null);
-                }
-                setTimeout(() => { tmdbProcessing = false; processTmdbQueue(); }, API_RATE_INTERVAL);
-            },
-            onerror() {
-                resolve(null);
-                setTimeout(() => { tmdbProcessing = false; processTmdbQueue(); }, API_RATE_INTERVAL);
-            }
-        });
-    }
-
-    function tmdbGet(url, options = {}) {
-        const priority = !!options.priority;
-        return new Promise(resolve => {
-            if (priority) tmdbQueue.unshift({ url, resolve });
-            else tmdbQueue.push({ url, resolve });
-            processTmdbQueue();
-        });
-    }
-
-    function extractYearNumber(year) {
-        const yearNum = parseInt(String(year || '').match(/\d{4}/)?.[0], 10);
-        return Number.isFinite(yearNum) ? yearNum : null;
-    }
-
-    function getYearFromDate(dateText) {
-        if (!dateText || typeof dateText !== 'string') return null;
-        const match = dateText.match(/^(\d{4})/);
-        if (!match) return null;
-        const year = Number(match[1]);
-        return Number.isFinite(year) ? year : null;
-    }
-
-    function normalizeAnimeNameForQuery(name) {
-        let cleaned = String(name || '').trim();
-        if (!cleaned) return '';
-
-        const seasonInBracketsPattern = /[（(][^（）()]{0,24}(?:第\s*[0-9０-９一二三四五六七八九十百千兩两〇零]+\s*[季期篇部]|season\s*\d+|s\d+)[^（）()]{0,24}[)）]/gi;
-        cleaned = cleaned.replace(seasonInBracketsPattern, ' ');
-
-        const seasonPatterns = [
-            /第\s*[0-9０-９一二三四五六七八九十百千兩两〇零]+\s*[季期篇部](?:\s*(?:完結篇|完结篇|完結|完结|最終章|最终章))?/gi,
-            /\bseason\s*[0-9]+\b/gi,
-            /\bs(?:eason)?\s*[0-9]+\b/gi,
-            /\bpart\s*[0-9]+\b/gi,
-            /\bpt\.?\s*[0-9]+\b/gi
-        ];
-        for (const pattern of seasonPatterns) {
-            cleaned = cleaned.replace(pattern, ' ');
-        }
-
-        cleaned = cleaned
-            .replace(/[-－–—_]+/g, ' ')
-            .replace(/[：:|/\\-]\s*$/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-
-        return cleaned;
-    }
-
-    function normalizeAsciiDigits(text) {
-        return String(text || '').replace(/[０-９]/g, (ch) => String(ch.charCodeAt(0) - 0xFEE0));
-    }
-
-    function parseEnglishOrdinal(raw) {
-        const text = String(raw || '').toLowerCase().replace(/[\s_-]+/g, '');
-        const map = {
-            first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6,
-            seventh: 7, eighth: 8, ninth: 9, tenth: 10, eleventh: 11, twelfth: 12
-        };
-        if (map[text]) return map[text];
-        const ordinalMatch = text.match(/^(\d+)(?:st|nd|rd|th)$/);
-        if (ordinalMatch) {
-            const value = Number(ordinalMatch[1]);
-            return Number.isFinite(value) && value > 0 ? value : null;
-        }
-        return null;
-    }
-
-    function parseSeasonNumber(raw) {
-        const text = normalizeAsciiDigits(raw).trim();
-        if (!text) return null;
-        const englishOrdinal = parseEnglishOrdinal(text);
-        if (Number.isFinite(englishOrdinal)) return englishOrdinal;
-        if (/^\d+$/.test(text)) {
-            const value = Number(text);
-            return Number.isFinite(value) && value > 0 ? value : null;
-        }
-
-        const digitMap = {
-            '零': 0, '〇': 0,
-            '一': 1, '二': 2, '兩': 2, '两': 2, '三': 3, '四': 4, '五': 5,
-            '六': 6, '七': 7, '八': 8, '九': 9
-        };
-        const unitMap = { '十': 10, '百': 100, '千': 1000 };
-
-        let section = 0;
-        let number = 0;
-        let seen = false;
-
-        for (const ch of text) {
-            if (Object.prototype.hasOwnProperty.call(digitMap, ch)) {
-                number = digitMap[ch];
-                seen = true;
-                continue;
-            }
-            if (Object.prototype.hasOwnProperty.call(unitMap, ch)) {
-                seen = true;
-                const unit = unitMap[ch];
-                if (number === 0) number = 1;
-                section += number * unit;
-                number = 0;
-                continue;
-            }
-            return null;
-        }
-
-        if (!seen) return null;
-        const value = section + number;
-        return Number.isFinite(value) && value > 0 ? value : null;
-    }
-
-    function extractTitleAndSeason(rawName) {
-        const original = String(rawName || '').trim();
-        let working = original;
-        let seasonNumber = null;
-
-        const trySetSeason = (rawSeason) => {
-            if (Number.isFinite(seasonNumber)) return;
-            const parsed = parseSeasonNumber(rawSeason);
-            if (Number.isFinite(parsed) && parsed > 0) seasonNumber = parsed;
-        };
-
-        const trailingSeasonInBrackets = /(?:\s*[-_ ]*)[（(]\s*(?:(?:第\s*([0-9０-９一二三四五六七八九十百千兩两〇零]+)\s*(?:季|期|部|篇))|(?:(?:season|s|part|pt\.?)\s*([0-9０-９]+))|((?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth))\s+season)\s*[)）]\s*$/i;
-        const trailingSeasonText = /(?:\s*[-_ ]*)?(?:第\s*([0-9０-９一二三四五六七八九十百千兩两〇零]+)\s*(?:季|期|部|篇)|(?:season|s|part|pt\.?)\s*([0-9０-９]+)|((?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth))\s+season)\s*(?:[-_ ]*)$/i;
-
-        let changed = true;
-        while (changed) {
-            changed = false;
-            const bracketMatch = working.match(trailingSeasonInBrackets);
-            if (bracketMatch && typeof bracketMatch.index === 'number') {
-                trySetSeason(bracketMatch[1] || bracketMatch[2] || bracketMatch[3]);
-                working = working.slice(0, bracketMatch.index).trim();
-                changed = true;
-                continue;
-            }
-            const textMatch = working.match(trailingSeasonText);
-            if (textMatch && typeof textMatch.index === 'number') {
-                trySetSeason(textMatch[1] || textMatch[2] || textMatch[3]);
-                working = working.slice(0, textMatch.index).trim();
-                changed = true;
-            }
-        }
-
-        if (Number.isFinite(seasonNumber)) {
-            const trailingDigit = working.match(/(?:[\s\-_:：])([0-9０-９]+)\s*$/);
-            if (trailingDigit && typeof trailingDigit.index === 'number') {
-                const tailNum = parseSeasonNumber(trailingDigit[1]);
-                if (tailNum === seasonNumber) {
-                    working = working.slice(0, trailingDigit.index).trim();
+                    data = JSON.parse(cache);
+                } catch (e) {
+                    data = null;
                 }
             }
-        }
 
-        working = working
-            .replace(/[：:|/\\-]+\s*$/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
+            if (!data) {
+                const fetchCatalog = (url) => {
+                    return new Promise((resolve, reject) => {
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url: url,
+                            timeout: 5000,
+                            onload: (res) => {
+                                if (res.status === 200) resolve(res.responseText);
+                                else reject(new Error(`Status ${res.status}`));
+                            },
+                            onerror: reject,
+                            ontimeout: () => reject(new Error('Timeout'))
+                        });
+                    });
+                };
 
-        const baseName = normalizeAnimeNameForQuery(working) || normalizeAnimeNameForQuery(original) || original;
-        return { baseName, seasonNumber };
-    }
+                let responseText;
+                try {
+                    responseText = await fetchCatalog(ENHANCED_JSON_URL);
+                } catch (e) {
+                    console.warn('[Anime1 Enhancer] Failed to load enhanced catalog from GitHub:', e.message);
+                    throw e;
+                }
 
-    function buildQueryCandidates(name) {
-        const candidates = [];
-        const seen = new Set();
-        const add = (value) => {
-            const query = String(value || '')
-                .replace(/[-－–—_]+/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim();
-            if (!query || seen.has(query)) return;
-            seen.add(query);
-            candidates.push(query);
-        };
-        const firstNChars = (text, n) => Array.from(String(text || '')).slice(0, n).join('');
-
-        const normalized = normalizeAnimeNameForQuery(name);
-        if (!normalized) return candidates;
-
-        const isContinuousName = !/\s/.test(normalized);
-        const longNameShort = (isContinuousName && Array.from(normalized).length > 10) ? firstNChars(normalized, 10) : '';
-        if (longNameShort) add(longNameShort);
-        add(normalized);
-
-        const parts = normalized.split(/\s+/).filter(Boolean);
-        if (parts.length <= 1) return candidates;
-
-        for (let count = parts.length - 1; count >= 1; count -= 1) {
-            add(parts.slice(0, count).join(' '));
-        }
-        return candidates;
-    }
-
-    async function tmdbSearchTv(query, yearRef = null) {
-        const params = new URLSearchParams({
-            api_key: TMDB_API_KEY,
-            query,
-            language: 'zh-TW',
-            include_adult: 'true'
-        });
-        if (Number.isFinite(yearRef)) {
-            params.set('year', String(yearRef));
-        }
-        const data = await tmdbGet(`${TMDB_API_URL}/search/tv?${params.toString()}`);
-        if (!data || !Array.isArray(data.results)) return [];
-        return data.results;
-    }
-
-    async function tmdbSearchMovie(query) {
-        const params = new URLSearchParams({
-            api_key: TMDB_API_KEY,
-            query,
-            language: 'zh-TW',
-            include_adult: 'true'
-        });
-        const data = await tmdbGet(`${TMDB_API_URL}/search/movie?${params.toString()}`);
-        if (!data || !Array.isArray(data.results)) return [];
-        return data.results;
-    }
-
-    async function tmdbFetchSeason(tvId, seasonNumber) {
-        const params = new URLSearchParams({
-            api_key: TMDB_API_KEY,
-            language: 'zh-TW'
-        });
-        return await tmdbGet(`${TMDB_API_URL}/tv/${tvId}/season/${seasonNumber}?${params.toString()}`, { priority: true });
-    }
-
-    function buildTmdbPosterUrl(posterPath) {
-        if (!posterPath || typeof posterPath !== 'string') return null;
-        return `${TMDB_IMAGE_BASE}${posterPath}`;
-    }
-
-    function buildTmdbBackdropUrl(backdropPath) {
-        if (!backdropPath || typeof backdropPath !== 'string') return null;
-        return `${TMDB_BACKDROP_BASE}${backdropPath}`;
-    }
-
-    function filterAnimeTvResults(results) {
-        if (!Array.isArray(results) || results.length === 0) return [];
-        return results.filter(item => Array.isArray(item?.genre_ids) && item.genre_ids.includes(16));
-    }
-
-    function filterAnimeMovieResults(results) {
-        if (!Array.isArray(results) || results.length === 0) return [];
-        return results.filter(item => Array.isArray(item?.genre_ids) && item.genre_ids.includes(16));
-    }
-
-    async function searchTmdbPoster(animeName, year) {
-        const parsed = extractTitleAndSeason(animeName);
-        const candidates = buildQueryCandidates(parsed.baseName);
-        const inputYear = extractYearNumber(year);
-        let fallbackTitle = parsed.baseName || animeName;
-
-        for (const query of candidates) {
-            const results = await tmdbSearchTv(query, inputYear);
-            if (!results.length) continue;
-            const animeResults = filterAnimeTvResults(results);
-            if (!animeResults.length) continue;
-
-            const best = animeResults[0];
-            if (!best) continue;
-
-            fallbackTitle = best.name || best.original_name || fallbackTitle;
-            let posterPath = best.poster_path || null;
-            if (Number.isFinite(parsed.seasonNumber) && parsed.seasonNumber > 0 && Number.isFinite(best.id)) {
-                const seasonData = await tmdbFetchSeason(best.id, parsed.seasonNumber);
-                if (seasonData?.poster_path) posterPath = seasonData.poster_path;
+                data = JSON.parse(responseText);
+                GM_setValue('ae_enhanced_catalog', responseText);
+                GM_setValue('ae_enhanced_catalog_time', now);
             }
 
-            const poster = buildTmdbPosterUrl(posterPath);
-            if (poster) {
-                return { poster, title: fallbackTitle };
+            if (Array.isArray(data)) {
+                enhancedCatalog = data.map(mapEnhancedItem);
+                enhancedMap.clear();
+                enhancedCatalog.forEach(item => {
+                    if (item.catId) enhancedMap.set(item.catId, item);
+                });
+                isEnhancedLoaded = true;
+                console.log('[Anime1 Enhancer] Enhanced catalog loaded successfully. Items:', data.length);
+                return;
             }
+        } catch (e) {
+            console.warn('[Anime1 Enhancer] Failed to load enhanced catalog, falling back:', e.message);
         }
-
-        for (const query of candidates) {
-            const results = await tmdbSearchMovie(query);
-            if (!results.length) continue;
-            const animeResults = filterAnimeMovieResults(results);
-            if (!animeResults.length) continue;
-
-            const best = animeResults[0];
-            if (!best) continue;
-
-            fallbackTitle = best.title || best.original_title || fallbackTitle;
-            const poster = buildTmdbPosterUrl(best.poster_path || null);
-            if (poster) {
-                return { poster, title: fallbackTitle };
-            }
-        }
-
-        return { poster: null, title: fallbackTitle };
+        isEnhancedLoaded = false;
     }
 
-    async function searchTmdbBackdropForPlayer(animeName, year = null) {
-        const parsed = extractTitleAndSeason(animeName);
-        const candidates = buildQueryCandidates(parsed.baseName);
-        const inputYear = extractYearNumber(year);
 
-        for (const query of candidates) {
-            const results = await tmdbSearchTv(query, inputYear);
-            if (!results.length) continue;
-            const animeResults = filterAnimeTvResults(results);
-            if (!animeResults.length) continue;
-            const first = animeResults[0];
-            const backdrop = buildTmdbBackdropUrl(first?.backdrop_path);
-            if (backdrop) return backdrop;
-        }
-        return null;
-    }
-
-    async function searchBangumiScore(animeName, year) {
-        const yearNum = extractYearNumber(year);
-        const body = {
-            keyword: animeName,
-            filter: {
-                type: [2],
-                nsfw: false
-            },
-            limit: 3
-        };
-
-        if (Number.isFinite(yearNum)) {
-            body.filter.air_date = [
-                `>=${yearNum}-01-01`,
-                `<${yearNum + 1}-01-01`
-            ];
-        }
-
-        const data = await bgmRequest('/search/subjects', body);
-        if (!data) return null;
-        if (data.data && data.data.length > 0) {
-            const media = data.data[0];
-            return {
-                score: media.rating?.score || null,
-                title: media.name_cn || media.name || animeName
-            };
-        }
-        return { score: null, title: animeName };
-    }
-
-    async function searchBangumi(animeName, year) {
-        const cached = getCachedData(animeName);
-        if (cached !== null) return cached;
-
-        const [tmdbData, bgmData] = await Promise.all([
-            searchTmdbPoster(animeName, year),
-            searchBangumiScore(animeName, year)
-        ]);
-
-        if (!tmdbData && !bgmData) return null;
-
-        const result = {
-            poster: tmdbData?.poster || null,
-            score: bgmData?.score || null,
-            title: tmdbData?.title || bgmData?.title || animeName
-        };
-
-        if (result.poster) {
-            setCachedData(animeName, result);
-        }
-        return result;
-    }
 
     // ===================== GLOBAL STYLES =====================
     injectCSS(`
@@ -1007,11 +780,45 @@
         .ae-modal-steps a { color: var(--ae-primary); text-decoration: underline; }
 
         /* Form Controls */
-        .ae-modal-field input, .ae-fav-rename-input {
+        .ae-modal-field input:not([type="radio"]), .ae-fav-rename-input {
             width: 100%; height: 38px; border-radius: 10px; border: 1px solid var(--ae-border-primary);
             background: var(--ae-bg-input); color: var(--ae-text-primary); padding: 0 12px; outline: none; font-family: inherit;
         }
-        .ae-modal-field input:focus, .ae-fav-rename-input:focus { border-color: var(--ae-primary); box-shadow: 0 0 0 3px rgba(var(--ae-primary-rgb), 0.2); }
+        .ae-modal-field input:not([type="radio"]):focus, .ae-fav-rename-input:focus { border-color: var(--ae-primary); box-shadow: 0 0 0 3px rgba(var(--ae-primary-rgb), 0.2); }
+
+        /* Radio Group styles */
+        .ae-radio-group { display: flex; gap: 12px; margin-top: 6px; }
+        .ae-radio-label {
+            flex: 1;
+            padding: 10px 14px;
+            border-radius: 10px;
+            background: var(--ae-bg-surface);
+            border: 1px solid var(--ae-border-light);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            user-select: none;
+            color: var(--ae-text-primary);
+            font-size: 14px;
+        }
+        .ae-radio-label:hover {
+            background: var(--ae-bg-hover);
+            border-color: rgba(var(--ae-primary-rgb), 0.5);
+        }
+        .ae-radio-label.is-selected {
+            background: rgba(var(--ae-primary-rgb), 0.15);
+            border-color: var(--ae-primary);
+            box-shadow: 0 0 12px rgba(var(--ae-primary-rgb), 0.2);
+        }
+        .ae-radio-input {
+            accent-color: var(--ae-primary);
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            margin: 0;
+        }
         .ae-modal-btn { height: 36px; border-radius: 10px; border: 1px solid transparent; padding: 0 12px; font-weight: 600; cursor: pointer; transition: 0.2s; background: rgba(30,41,59,0.48); color: var(--ae-text-primary); }
         .ae-modal-btn-primary { background: var(--ae-primary-grad); color: #fff; }
         .ae-modal-btn-primary:hover { filter: brightness(1.1); }
@@ -1029,10 +836,17 @@
 
 
         /* Unified Shortcut Help Styles */
-        .ae-modal-shortcuts { margin-top:16px; border-top:1px solid var(--ae-border-light); padding-top:12px; }
-        .ae-modal-shortcuts h3 { font-size:14px; color:#ddd6fe; margin-bottom:10px; font-weight:600; }
-        .ae-modal-shortcuts ul { font-size:12px; color:var(--ae-text-secondary); list-style:none; padding:0; margin:0; line-height:2.0; }
-        .ae-modal-shortcuts b { color:var(--ae-primary); font-weight:700; width:65px; display:inline-block; font-family: inherit; }
+        .ae-modal-shortcuts { margin-top:12px; border-top:1px solid var(--ae-border-light); padding-top:12px; }
+        .ae-modal-shortcuts h3 { font-size:14px; color:#ddd6fe; margin-bottom:8px; font-weight:600; }
+        .ae-modal-shortcuts ul { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; list-style:none; padding:0; margin:0; }
+        @media (max-width: 480px) {
+            .ae-modal-shortcuts ul {
+                grid-template-columns: 1fr;
+                gap: 6px;
+            }
+        }
+        .ae-modal-shortcuts li { font-size:12px; color:var(--ae-text-secondary); line-height:1.5; display:flex; align-items:center; }
+        .ae-modal-shortcuts b { color:var(--ae-primary); font-weight:700; width:68px; display:inline-block; font-family: inherit; }
 
         /* Global Toast */
         .ae-toast {
@@ -1088,69 +902,87 @@
         // Fetch anime list directly from API
         let animeList = [];
         try {
-            console.log('[Anime1 Enhancer] 正在请求 animelist.json...');
-            const jsonData = await fetchAnimeList();
-            console.log('[Anime1 Enhancer] 数据获取成功，项数:', jsonData?.length);
+            if (isEnhancedLoaded && enhancedCatalog) {
+                console.log('[Anime1 Enhancer] Using enhanced catalog for home page.');
+                animeList = enhancedCatalog.map(item => ({
+                    catId: item.catId,
+                    name: item.name,
+                    nameZhHans: item.nameZhHans || item.name,
+                    isR18: false,
+                    url: item.url || ("https://anime1.me/?cat=" + item.catId),
+                    episodes: item.episodes || '',
+                    year: item.year || '',
+                    sub: item.sub || '',
+                    score: item.score || null,
+                    coverUrl: item.coverUrl || null,
+                    "cn-coverURL": item["cn-coverURL"] || null
+                }));
+            } else {
+                console.log('[Anime1 Enhancer] 正在请求 animelist.json...');
+                const jsonData = await fetchAnimeList();
+                console.log('[Anime1 Enhancer] 数据获取成功，项数:', jsonData?.length);
 
-            if (!Array.isArray(jsonData)) {
-                throw new Error('返回的数据格式不正确');
-            }
+                if (!Array.isArray(jsonData)) {
+                    throw new Error('返回的数据格式不正确');
+                }
 
-            animeList = jsonData
-                .filter(item => item && Array.isArray(item))
-                .map(item => {
-                    let catId = parseInt(item[0], 10);
-                    let rawNameHtml = String(item[1] || ''); // This can contain HTML: 🔞 <a href="...">Name</a>
-                    let episodes = item[2] || '';
-                    let year = String(item[3] || '');
-                    let season = String(item[4] || '');
-                    let sub = item[5] || '';
-                    let externalUrl = item[6] || '';
+                animeList = jsonData
+                    .filter(item => item && Array.isArray(item))
+                    .map(item => {
+                        let catId = parseInt(item[0], 10);
+                        let rawNameHtml = String(item[1] || ''); // This can contain HTML: 🔞 <a href="...">Name</a>
+                        let episodes = item[2] || '';
+                        let year = String(item[3] || '');
+                        let season = String(item[4] || '');
+                        let sub = item[5] || '';
+                        let externalUrl = item[6] || '';
 
-                    // --- Advanced Parse for names with HTML ---
-                    let name = rawNameHtml;
-                    let isR18 = rawNameHtml.includes('🔞') || rawNameHtml.includes('(18禁)');
+                        // --- Advanced Parse for names with HTML ---
+                        let name = rawNameHtml;
+                        let isR18 = rawNameHtml.includes('🔞') || rawNameHtml.includes('(18禁)');
 
-                    // Extract pure name from <a> tag if exists
-                    const nameMatch = rawNameHtml.match(/<a[^>]*>([^<]+)<\/a>/);
-                    if (nameMatch) {
-                        name = nameMatch[1];
-                    } else {
-                        // Strip any remaining tags and emojis from the pure name string
-                        name = name.replace(/<[^>]*>/g, '').replace('🔞', '').replace('(18禁)', '').trim();
-                    }
-
-                    // Extract URL from <a> tag if catId is 0
-                    if (catId === 0 || !externalUrl) {
-                        const urlMatch = rawNameHtml.match(/href="([^"]+)"/);
-                        if (urlMatch) {
-                            externalUrl = urlMatch[1];
-                            if (externalUrl.startsWith('//')) externalUrl = 'https:' + externalUrl;
+                        // Extract pure name from <a> tag if exists
+                        const nameMatch = rawNameHtml.match(/<a[^>]*>([^<]+)<\/a>/);
+                        if (nameMatch) {
+                            name = nameMatch[1];
+                        } else {
+                            // Strip any remaining tags and emojis from the pure name string
+                            name = name.replace(/<[^>]*>/g, '').replace('🔞', '').replace('(18禁)', '').trim();
                         }
-                    }
 
-                    // Force pw origin for resolved R18 links if they are cat-based
-                    let url = externalUrl || ("https://anime1.me/?cat=" + catId);
-                    if (externalUrl.includes('anime1.pw')) isR18 = true;
+                        // Extract URL from <a> tag if catId is 0
+                        if (catId === 0 || !externalUrl) {
+                            const urlMatch = rawNameHtml.match(/href="([^"]+)"/);
+                            if (urlMatch) {
+                                externalUrl = urlMatch[1];
+                                if (externalUrl.startsWith('//')) externalUrl = 'https:' + externalUrl;
+                            }
+                        }
 
-                    // Final ID extraction for external links
-                    if (catId === 0 && externalUrl) {
-                        const idMatch = externalUrl.match(/[\?&]cat=(\d+)/);
-                        if (idMatch) catId = parseInt(idMatch[1], 10);
-                    }
+                        // Force pw origin for resolved R18 links if they are cat-based
+                        let url = externalUrl || ("https://anime1.me/?cat=" + catId);
+                        if (externalUrl.includes('anime1.pw')) isR18 = true;
 
-                    return {
-                        catId: catId,
-                        name: name,
-                        isR18: isR18,
-                        url: url,
-                        episodes: episodes,
-                        year: year,
-                        season: season,
-                        sub: sub
-                    };
-                })
-                .filter(a => (a.catId > 0 || a.url) && a.name);
+                        // Final ID extraction for external links
+                        if (catId === 0 && externalUrl) {
+                            const idMatch = externalUrl.match(/[\?&]cat=(\d+)/);
+                            if (idMatch) catId = parseInt(idMatch[1], 10);
+                        }
+
+                        return {
+                            catId: catId,
+                            name: name,
+                            nameZhHans: name,
+                            isR18: isR18,
+                            url: url,
+                            episodes: episodes,
+                            year: year,
+                            season: season,
+                            sub: sub
+                        };
+                    })
+                    .filter(a => (a.catId > 0 || a.url) && a.name);
+            }
             console.log('[Anime1 Enhancer] 列表处理完成，数量:', animeList.length);
         } catch (e) {
             console.error('[Anime1 Enhancer] 加载动画列表失败:', e);
@@ -1165,7 +997,6 @@
 
         // --- Data Extraction for Dropdowns ---
         const years = [...new Set(animeList.map(a => a.year))].filter(Boolean).sort().reverse();
-        const subs = [...new Set(animeList.map(a => a.sub))].filter(Boolean).sort((a, b) => a.localeCompare(b));
 
         // Build UI
         const container = document.getElementById('anime-enhanced-home');
@@ -1177,7 +1008,7 @@
                         <svg class="ae-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path>
                         </svg>
-                        <input type="text" id="ae-search-input" placeholder="搜尋動畫、年份或字幕組..." autocomplete="off">
+                        <input type="text" id="ae-search-input" placeholder="搜尋動畫或年份..." autocomplete="off">
                         <div class="ae-search-count"><span id="ae-visible-count">0</span> / ${animeList.length}</div>
                     </div>
                 </div>
@@ -1209,18 +1040,11 @@
                             <option value="completed">🌚 已完結</option>
                         </select>
                     </div>
-                    <div class="ae-filter-group">
+                    <div class="ae-filter-group" style="padding-right:4px">
                         <span class="ae-filter-label">年份：</span>
                         <select id="ae-year-select" class="ae-select ae-filter-select">
                             <option value="">全部年份</option>
                             ${years.map(y => '<option value="' + y + '">' + y + ' 年</option>').join('')}
-                        </select>
-                    </div>
-                    <div class="ae-filter-group" style="padding-right:4px">
-                        <span class="ae-filter-label">字幕組：</span>
-                        <select id="ae-sub-select" class="ae-select ae-filter-select">
-                            <option value="">全部</option>
-                            ${subs.map(s => '<option value="' + s + '">' + s + '</option>').join('')}
                         </select>
                     </div>
                 </div>
@@ -1248,7 +1072,6 @@
         let currentFilter = 'all'; // View: all, continue, favorites
         let currentStatus = 'all'; // Status: all, airing, completed
         let currentYear = '';
-        let currentSub = '';
         let currentSortMode = 'newest';
         let currentFavCategory = '';
 
@@ -1310,7 +1133,6 @@
         }
 
         function filterAndRender() {
-            clearApiQueue();
             const watchMap = getWatchProgressMap();
             continueMetaByCat = new Map();
             const query = document.getElementById('ae-search-input')?.value?.toLowerCase() || '';
@@ -1320,8 +1142,8 @@
                 const progress = getWatchProgressForAnime(a, watchMap);
                 if (progress) continueMetaByCat.set(a.catId, progress);
 
-                // Full-text search index (including R18 keyword)
-                const searchStr = `${a.name} ${a.year} ${a.sub} ${a.isR18 ? '18禁 18+ r18' : ''}`.toLowerCase();
+                // Full-text search index supporting both Taiwanese/Traditional and Simplified Chinese (including R18 keyword)
+                const searchStr = `${a.name} ${a.nameZhHans || ''} ${a.year} ${a.sub} ${a.isR18 ? '18禁 18+ r18' : ''}`.toLowerCase();
                 const matchesSearch = !query || query.split(/\s+/).every(q => searchStr.includes(q));
 
                 // Dimension 1: Large Scope (View)
@@ -1335,11 +1157,10 @@
                     (currentStatus === 'airing' && isAiring) ||
                     (currentStatus === 'completed' && !isAiring);
 
-                // Dimension 3: Detailed Filters (Year & Sub)
+                // Dimension 3: Detailed Filters (Year)
                 const matchesYear = !currentYear || a.year === currentYear;
-                const matchesSub = !currentSub || a.sub === currentSub;
 
-                return matchesSearch && matchesView && matchesStatus && matchesYear && matchesSub;
+                return matchesSearch && matchesView && matchesStatus && matchesYear;
             });
 
             // Final Sorting
@@ -1429,7 +1250,7 @@
                     ${currentFilter === 'favorites' ? `<button type="button" class="ae-progress-delete ae-fav-delete" title="取消收藏" aria-label="取消收藏" data-cat-id="${anime.catId}">×</button>` : ''}
                 </div>
                 <div class="ae-card-info">
-                    <h3 class="ae-card-title">${anime.isR18 ? '🔞 ' : ''}${anime.name}</h3>
+                    <h3 class="ae-card-title">${anime.isR18 ? '🔞 ' : ''}${getAnimeName(anime)}</h3>
                     <div class="ae-card-meta">
                         <span class="ae-meta-tag">${yearText}</span>
                         <span class="ae-meta-episode ${episodeMetaClass}">${episodeMetaText}</span>
@@ -1444,21 +1265,24 @@
             const card = grid.querySelector(`.ae-card[data-card-key="${cardKey}"]`);
             if (!card) return;
             const img = card.querySelector('.ae-card-img'), placeholder = card.querySelector('.ae-card-poster-placeholder'), scoreMeta = card.querySelector('.ae-meta-score');
-            const data = await searchBangumi(anime.name, anime.year);
-            if (data) {
-                if (data.score && scoreMeta) {
-                    const scoreValue = typeof data.score === 'number' ? data.score.toFixed(1) : data.score;
+
+            const resolvedCoverUrl = getAnimeCover(anime);
+
+            // 1. Prioritize preloaded cover and score from the enhanced JSON to avoid client-side API limits
+            if (resolvedCoverUrl || anime.score !== null) {
+                if (anime.score !== null && scoreMeta) {
+                    const scoreValue = typeof anime.score === 'number' ? anime.score.toFixed(1) : anime.score;
                     scoreMeta.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>${scoreValue}`;
                     scoreMeta.style.display = 'inline-flex';
                 }
-                if (data.poster) {
+                if (resolvedCoverUrl) {
                     const showImage = (src) => {
                         img.onload = () => { placeholder.style.display = 'none'; img.classList.add('ae-loaded'); };
                         img.style.display = 'block'; img.src = src;
                     };
                     const gmFallback = () => {
                         GM_xmlhttpRequest({
-                            method: 'GET', url: data.poster, responseType: 'arraybuffer', headers: { 'User-Agent': BGM_USER_AGENT },
+                            method: 'GET', url: resolvedCoverUrl, responseType: 'arraybuffer', headers: { 'User-Agent': BGM_USER_AGENT },
                             onload: (response) => {
                                 if (response.status === 200 && response.response) {
                                     try {
@@ -1471,8 +1295,9 @@
                         });
                     };
                     img.referrerPolicy = 'no-referrer'; img.onerror = () => { gmFallback(); img.onerror = null; };
-                    showImage(data.poster);
+                    showImage(resolvedCoverUrl);
                 }
+                return;
             }
         }
 
@@ -1481,7 +1306,6 @@
         document.getElementById('ae-sort-select')?.addEventListener('change', (e) => { currentSortMode = e.target.value; filterAndRender(); });
         document.getElementById('ae-status-select')?.addEventListener('change', (e) => { currentStatus = e.target.value; filterAndRender(); });
         document.getElementById('ae-year-select')?.addEventListener('change', (e) => { currentYear = e.target.value; filterAndRender(); });
-        document.getElementById('ae-sub-select')?.addEventListener('change', (e) => { currentSub = e.target.value; filterAndRender(); });
 
         document.querySelectorAll('.ae-segment-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -2064,6 +1888,15 @@
         const animeName = getAnimeTitleFromSinglePost();
         const playCatId = catId || getCurrentCategoryId();
 
+        let displayName = animeName;
+        let enhancedAnime = null;
+        if (isEnhancedLoaded && playCatId) {
+            enhancedAnime = enhancedMap.get(playCatId);
+            if (enhancedAnime) {
+                displayName = getAnimeName(enhancedAnime);
+            }
+        }
+
         // Hide original article content but keep comments
         article.style.display = 'none';
         document.querySelectorAll('#main > #ad-1, #main > #ad-2').forEach(el => { el.style.display = 'none'; });
@@ -2089,7 +1922,7 @@
                 playHeader.id = 'ap-play-header-panel';
                 playHeader.innerHTML = `
                     <div class="ap-header-main">
-                        <h1 class="ap-anime-title">${animeName}</h1>
+                        <h1 class="ap-anime-title">${displayName}</h1>
                         <div class="ap-now-playing">
                             <span class="ap-now-label">正在播放</span>
                             <span class="ap-now-ep" id="ap-current-ep-label">${entryTitle}</span>
@@ -2436,22 +2269,25 @@
         }
 
         // Fetch TMDB backdrop for player hero (non-season, w1280)
-        if (animeName) {
-            searchTmdbBackdropForPlayer(animeName).then(heroImage => {
-                if (heroImage && vjsContainer) {
-                    const videoJsRoot = vjsContainer.querySelector('.video-js');
-                    const vid = vjsContainer.querySelector('video');
-                    const posterEl = vjsContainer.querySelector('.vjs-poster');
-                    if (videoJsRoot) videoJsRoot.setAttribute('poster', heroImage);
-                    if (vid) vid.setAttribute('poster', heroImage);
-                    if (posterEl) posterEl.style.backgroundImage = `url("${heroImage}")`;
-                }
-            }).catch(() => { });
+        // Fetch TMDB backdrop for player hero
+        const applyBackdrop = (heroImage) => {
+            if (heroImage && vjsContainer) {
+                const videoJsRoot = vjsContainer.querySelector('.video-js');
+                const vid = vjsContainer.querySelector('video');
+                const posterEl = vjsContainer.querySelector('.vjs-poster');
+                if (videoJsRoot) videoJsRoot.setAttribute('poster', heroImage);
+                if (vid) vid.setAttribute('poster', heroImage);
+                if (posterEl) posterEl.style.backgroundImage = `url("${heroImage}")`;
+            }
+        };
+
+        if (enhancedAnime && enhancedAnime.backdropUrl) {
+            applyBackdrop(enhancedAnime.backdropUrl);
         }
 
-        // ---- Fetch all episodes from category in background ----
+        // ---- Fetch and render episodes list ----
         if (playCatId) {
-            fetchAllCategoryEpisodes(playCatId).then(episodes => {
+            const renderEpisodes = (episodes) => {
                 const epGrid = document.getElementById('ap-ep-grid');
                 const epCount = document.getElementById('ap-ep-count');
                 if (!epGrid) return;
@@ -2470,7 +2306,10 @@
                     const btn = document.createElement('button');
                     btn.className = 'ap-ep-btn' + (isCurrent ? ' active' : '');
                     btn.textContent = Number.isFinite(ep.epNum) ? String(ep.epNum).padStart(2, '0') : '??';
-                    btn.title = ep.title;
+
+                    // Tooltip uses language-specific title + ep number constructed dynamically, avoiding Traditional title leaks
+                    btn.title = Number.isFinite(ep.epNum) ? `${displayName} [${String(ep.epNum).padStart(2, '0')}]` : (ep.title || '');
+
                     btn.addEventListener('click', (e) => {
                         e.preventDefault();
                         if (isCurrent) return; // Already on this episode
@@ -2490,7 +2329,7 @@
                         const nextBtn = document.createElement('button');
                         nextBtn.type = 'button';
                         nextBtn.className = 'vjs-next-control vjs-control vjs-button';
-                        nextBtn.title = `下一集：${nextEp.title}`;
+                        nextBtn.title = Number.isFinite(nextEp.epNum) ? `下一集：${displayName} [${String(nextEp.epNum).padStart(2, '0')}]` : `下一集：${nextEp.title || ''}`;
                         nextBtn.innerHTML = `
                             <svg viewBox="0 0 24 24" aria-hidden="true">
                                 <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" fill="currentColor"></path>
@@ -2506,8 +2345,22 @@
                         playBtn.after(nextBtn);
                     }
                 }
+            };
 
-            });
+            // Use preloaded episodesList from enhanced database if available (Zero-Scrape client-side)
+            if (enhancedAnime && Array.isArray(enhancedAnime.episodesList) && enhancedAnime.episodesList.length > 0) {
+                console.log('[Anime1 Enhancer] Rendering episodes list from preloaded database.');
+                const mappedEpisodes = enhancedAnime.episodesList.map(ep => ({
+                    title: Number.isFinite(ep.epNum) ? `[${String(ep.epNum).padStart(2, '0')}]` : '',
+                    epNum: ep.epNum,
+                    postUrl: ep.url || `https://anime1.me/${ep.postId}`,
+                    postId: ep.postId
+                }));
+                renderEpisodes(mappedEpisodes);
+            } else {
+                console.log('[Anime1 Enhancer] No preloaded episodes list. Falling back to background scraping...');
+                fetchAllCategoryEpisodes(playCatId).then(renderEpisodes);
+            }
         }
     }
 
@@ -2796,10 +2649,12 @@
     `;
 
     // ===================== INIT =====================
-    function startEnhancer() {
+    async function startEnhancer() {
         mountSettingsFloatingButton();
         setTimeout(mountSettingsFloatingButton, 120);
         initForcedDarkMode();
+
+        await loadCatalogData();
 
         if (isHomePage()) {
             enhanceHomePage();
@@ -2809,10 +2664,16 @@
             // Not a supported page, remove hide
             document.getElementById('ae-initial-hide')?.remove();
         }
+
+        // Show settings dialog on first run
+        if (!GM_getValue('ae_first_run_done', false)) {
+            GM_setValue('ae_first_run_done', true);
+            openGeneralSettingsDialog();
+        }
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', startEnhancer);
+        document.addEventListener('DOMContentLoaded', () => startEnhancer());
     } else {
         startEnhancer();
     }
