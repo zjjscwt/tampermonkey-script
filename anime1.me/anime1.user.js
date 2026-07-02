@@ -1,9 +1,10 @@
 // ==UserScript==
-// @name         Anime1.me Enhanced
+// @name         Anime1.me 增强2026
 // @name:zh-CN   Anime1.me 优化
 // @name:zh-TW   Anime1.me 增强
 // @version      4.1.1
-// @description  封面+簡中繁中名搜索+收藏夾+觀看記錄+選集+快捷鍵+播放記憶+黑名單
+// @description  封面+简中繁中名搜索+收藏夹+观看记录+选集+快捷键+播放记忆+黑名单
+// @description:zh-tw  封面+簡中繁中名搜索+收藏夾+觀看記錄+選集+快捷鍵+播放記憶+黑名單
 // @author       Ryan
 // @match        https://anime1.me/*
 // @grant        GM_xmlhttpRequest
